@@ -124,6 +124,9 @@ export class RTRenderer {
       damage: 0,
       fade: 1,
       heartbeat: 0,
+      focus: 0,
+      aperture: 0.6,
+      desaturate: 0,
       fogColor: new THREE.Color(0x0a0c12),
       fogDensity: 0.028,
     };
@@ -172,6 +175,12 @@ export class RTRenderer {
       new THREE.WebGLRenderTarget(w, h, common),
     ];
 
+    // half-res pair used for cutscene depth of field
+    this.dofRT = [
+      new THREE.WebGLRenderTarget(Math.max(2, w >> 1), Math.max(2, h >> 1), common),
+      new THREE.WebGLRenderTarget(Math.max(2, w >> 1), Math.max(2, h >> 1), common),
+    ];
+
     this.bloomRT = [];
     for (let i = 0; i < 3; i += 1) {
       const div = 2 ** (i + 1);
@@ -192,6 +201,7 @@ export class RTRenderer {
     kill(this.gbufferRT);
     kill(this.compositeRT);
     (this.historyRT || []).forEach(kill);
+    (this.dofRT || []).forEach(kill);
     (this.bloomRT || []).forEach((pair) => { kill(pair.a); kill(pair.b); });
   }
 
@@ -278,6 +288,13 @@ export class RTRenderer {
         tBloomB: { value: null },
         tBloomC: { value: null },
         tNoise: { value: this.textures.noise },
+        tBlur: { value: null },
+        tDepth: { value: null },
+        uFocus: { value: 0 },
+        uAperture: { value: 0.6 },
+        uNear: { value: 0.1 },
+        uFar: { value: 220 },
+        uDesaturate: { value: 0 },
         uTime: { value: 0 },
         uBloomStrength: { value: 0.75 },
         uExposure: { value: 1.15 },
@@ -455,9 +472,26 @@ export class RTRenderer {
       source = level.a;
     }
 
-    // 6. grade + output ------------------------------------------------------
+    // 6. depth of field (cutscenes only) --------------------------------------
+    if (this.grade.focus > 0.001) {
+      this.blur.material.uniforms.tDiffuse.value = resolved;
+      this.blur.material.uniforms.uDirection.value.set(1.6 / this.dofRT[0].width, 0);
+      this.blur.render(this.renderer, this.dofRT[0]);
+      this.blur.material.uniforms.tDiffuse.value = this.dofRT[0].texture;
+      this.blur.material.uniforms.uDirection.value.set(0, 1.6 / this.dofRT[0].height);
+      this.blur.render(this.renderer, this.dofRT[1]);
+    }
+
+    // 7. grade + output ------------------------------------------------------
     const fu = this.final.material.uniforms;
     fu.tDiffuse.value = resolved;
+    fu.tBlur.value = this.dofRT[1].texture;
+    fu.tDepth.value = this.sceneRT.depthTexture;
+    fu.uFocus.value = this.grade.focus;
+    fu.uAperture.value = this.grade.aperture;
+    fu.uNear.value = camera.near;
+    fu.uFar.value = camera.far;
+    fu.uDesaturate.value = this.grade.desaturate;
     fu.tBloomA.value = this.bloomRT[0].a.texture;
     fu.tBloomB.value = this.bloomRT[1].a.texture;
     fu.tBloomC.value = this.bloomRT[2].a.texture;

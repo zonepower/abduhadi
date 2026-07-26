@@ -240,6 +240,44 @@ canvas#view {
 
 #subtitleWho { font-weight: 700; margin-left: 10px; }
 
+/* ---------------------------------------------------------- letterbox --- */
+
+#letterbox {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 12;
+  --bar: 0vh;
+}
+
+#letterbox i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--bar);
+  background: #000;
+  display: block;
+}
+
+#letterbox i:first-child { top: 0; }
+#letterbox i:last-child { bottom: 0; }
+
+/* during a shot the gameplay readouts get out of the way */
+#hud.cinematic #vitals,
+#hud.cinematic #weapon,
+#hud.cinematic #objective,
+#hud.cinematic #crosshair,
+#hud.cinematic #prompt,
+#hud.cinematic #bossBar {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+#hud.cinematic #subtitle {
+  bottom: 15%;
+  font-size: 23px;
+}
+
 /* --------------------------------------------------------- chapter card --- */
 
 #chapterCard {
@@ -476,6 +514,8 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blood); 
     </div>
   </div>
 
+  <div id="letterbox" class="hidden"><i></i><i></i></div>
+
   <div id="chapterCard" class="hidden">
     <h2 id="chapterTitle"></h2>
     <p id="chapterSubtitle"></p>
@@ -535,10 +575,13 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--blood); 
         <label for="musicRange">الموسيقى <b id="musicRangeValue"></b></label>
         <input id="musicRange" type="range" min="0" max="1" step="0.05" />
 
+        <label for="voiceVolumeRange">أصوات الشخصيات <b id="voiceVolumeRangeValue"></b></label>
+        <input id="voiceVolumeRange" type="range" min="0" max="1" step="0.05" />
+
         <label for="invertToggle">عكس المحور الرأسي</label>
         <input id="invertToggle" type="checkbox" />
 
-        <label for="voiceToggle">الحوارات الصوتية</label>
+        <label for="voiceToggle">نطق الكلمات (يعتمد على أصوات النظام)</label>
         <input id="voiceToggle" type="checkbox" />
 
         <label for="subtitleToggle">الترجمة النصية</label>
@@ -54327,6 +54370,14 @@ uniform sampler2D tBloomA;
 uniform sampler2D tBloomB;
 uniform sampler2D tBloomC;
 uniform sampler2D tNoise;
+uniform sampler2D tBlur;
+uniform sampler2D tDepth;
+
+uniform float uFocus;      // distance in metres the lens is focused on (0 = off)
+uniform float uAperture;   // how fast things fall out of focus
+uniform float uNear;
+uniform float uFar;
+uniform float uDesaturate;
 
 uniform float uTime;
 uniform float uBloomStrength;
@@ -54365,6 +54416,15 @@ void main() {
   color.g = texture2D(tDiffuse, uv).g;
   color.b = texture2D(tDiffuse, uv - centered * ab * 0.004).b;
 
+  // depth of field: only ever on during cutscenes
+  if (uFocus > 0.001) {
+    float d = texture2D(tDepth, uv).x;
+    float viewZ = (2.0 * uNear * uFar) / (uFar + uNear - (d * 2.0 - 1.0) * (uFar - uNear));
+    float coc = clamp(abs(viewZ - uFocus) / max(0.6, uFocus * uAperture), 0.0, 1.0);
+    coc = coc * coc * (3.0 - 2.0 * coc);
+    color = mix(color, texture2D(tBlur, uv).rgb, coc * 0.92);
+  }
+
   vec3 bloom = texture2D(tBloomA, uv).rgb * 0.5
              + texture2D(tBloomB, uv).rgb * 0.32
              + texture2D(tBloomC, uv).rgb * 0.2;
@@ -54375,7 +54435,7 @@ void main() {
 
   // filmic grade: crushed cold shadows, sickly warm highlights
   color = pow(color, vec3(1.0, 0.985, 0.96));
-  color = mix(vec3(dot(color, vec3(0.299, 0.587, 0.114))), color, 0.86 - panic * 0.25);
+  color = mix(vec3(dot(color, vec3(0.299, 0.587, 0.114))), color, 0.86 - panic * 0.25 - uDesaturate * 0.7);
   color.b += 0.035 * (1.0 - color.r);
   color.r += uDamage * 0.35 * (0.4 + dist);
 
@@ -54510,6 +54570,9 @@ class RTRenderer {
       damage: 0,
       fade: 1,
       heartbeat: 0,
+      focus: 0,
+      aperture: 0.6,
+      desaturate: 0,
       fogColor: new THREE.Color(0x0a0c12),
       fogDensity: 0.028,
     };
@@ -54558,6 +54621,12 @@ class RTRenderer {
       new THREE.WebGLRenderTarget(w, h, common),
     ];
 
+    // half-res pair used for cutscene depth of field
+    this.dofRT = [
+      new THREE.WebGLRenderTarget(Math.max(2, w >> 1), Math.max(2, h >> 1), common),
+      new THREE.WebGLRenderTarget(Math.max(2, w >> 1), Math.max(2, h >> 1), common),
+    ];
+
     this.bloomRT = [];
     for (let i = 0; i < 3; i += 1) {
       const div = 2 ** (i + 1);
@@ -54578,6 +54647,7 @@ class RTRenderer {
     kill(this.gbufferRT);
     kill(this.compositeRT);
     (this.historyRT || []).forEach(kill);
+    (this.dofRT || []).forEach(kill);
     (this.bloomRT || []).forEach((pair) => { kill(pair.a); kill(pair.b); });
   }
 
@@ -54664,6 +54734,13 @@ class RTRenderer {
         tBloomB: { value: null },
         tBloomC: { value: null },
         tNoise: { value: this.textures.noise },
+        tBlur: { value: null },
+        tDepth: { value: null },
+        uFocus: { value: 0 },
+        uAperture: { value: 0.6 },
+        uNear: { value: 0.1 },
+        uFar: { value: 220 },
+        uDesaturate: { value: 0 },
         uTime: { value: 0 },
         uBloomStrength: { value: 0.75 },
         uExposure: { value: 1.15 },
@@ -54841,9 +54918,26 @@ class RTRenderer {
       source = level.a;
     }
 
-    // 6. grade + output ------------------------------------------------------
+    // 6. depth of field (cutscenes only) --------------------------------------
+    if (this.grade.focus > 0.001) {
+      this.blur.material.uniforms.tDiffuse.value = resolved;
+      this.blur.material.uniforms.uDirection.value.set(1.6 / this.dofRT[0].width, 0);
+      this.blur.render(this.renderer, this.dofRT[0]);
+      this.blur.material.uniforms.tDiffuse.value = this.dofRT[0].texture;
+      this.blur.material.uniforms.uDirection.value.set(0, 1.6 / this.dofRT[0].height);
+      this.blur.render(this.renderer, this.dofRT[1]);
+    }
+
+    // 7. grade + output ------------------------------------------------------
     const fu = this.final.material.uniforms;
     fu.tDiffuse.value = resolved;
+    fu.tBlur.value = this.dofRT[1].texture;
+    fu.tDepth.value = this.sceneRT.depthTexture;
+    fu.uFocus.value = this.grade.focus;
+    fu.uAperture.value = this.grade.aperture;
+    fu.uNear.value = camera.near;
+    fu.uFar.value = camera.far;
+    fu.uDesaturate.value = this.grade.desaturate;
     fu.tBloomA.value = this.bloomRT[0].a.texture;
     fu.tBloomB.value = this.bloomRT[1].a.texture;
     fu.tBloomC.value = this.bloomRT[2].a.texture;
@@ -55028,7 +55122,7 @@ class AudioEngine {
   constructor() {
     this.ctx = null;
     this.ready = false;
-    this.volumes = { master: 0.85, sfx: 1, music: 0.7 };
+    this.volumes = { master: 0.85, sfx: 1, music: 0.7, voice: 1 };
     this.ambienceNodes = [];
     this.ambienceName = null;
     this.creakTimer = 0;
@@ -55051,6 +55145,20 @@ class AudioEngine {
     this.sfxBus.gain.value = this.volumes.sfx;
     this.sfxBus.connect(this.master);
 
+    // Dialogue gets its own bus so the mix can duck effects under a line.
+    this.voiceBus = this.ctx.createGain();
+    this.voiceBus.gain.value = this.volumes.voice ?? 1;
+    this.voiceBus.connect(this.master);
+
+    // A convolution send puts every voice and effect in the same room.
+    this.reverb = this.ctx.createConvolver();
+    this.reverbReturn = this.ctx.createGain();
+    this.reverbReturn.gain.value = 0.9;
+    this.reverbSend = this.ctx.createGain();
+    this.reverbSend.gain.value = 0.3;
+    this.reverbSend.connect(this.reverb).connect(this.reverbReturn).connect(this.master);
+    this.sfxBus.connect(this.reverbSend);
+
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.value = this.volumes.music;
     this.musicBus.connect(this.master);
@@ -55062,6 +55170,60 @@ class AudioEngine {
     this.noiseBuffer = this.#makeNoise(4, 'white');
     this.brownBuffer = this.#makeNoise(6, 'brown');
     this.ready = true;
+    this.setSpace('house');
+  }
+
+  /**
+   * Generates a decaying-noise impulse response. `damp` rolls the tail's high
+   * end off so a stone basement sounds nothing like a wooden hall.
+   */
+  #impulse(seconds, decay, damp) {
+    const rate = this.ctx.sampleRate;
+    const length = Math.max(1, Math.floor(rate * seconds));
+    const buffer = this.ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch += 1) {
+      const data = buffer.getChannelData(ch);
+      let low = 0;
+      for (let i = 0; i < length; i += 1) {
+        const white = Math.random() * 2 - 1;
+        low += (white - low) * damp;         // one-pole lowpass on the tail
+        const envelope = (1 - i / length) ** decay;
+        // a few early reflections keep it from sounding like a wash
+        const early = (i < rate * 0.05 && Math.random() < 0.004) ? 2.5 : 1;
+        data[i] = low * envelope * early;
+      }
+    }
+    return buffer;
+  }
+
+  /** Swaps the room the whole mix sits in. */
+  setSpace(name) {
+    if (!this.ready) return;
+    const spaces = {
+      outdoor: { seconds: 0.5, decay: 3.2, damp: 0.5, wet: 0.1 },
+      house: { seconds: 1.7, decay: 2.4, damp: 0.32, wet: 0.28 },
+      basement: { seconds: 3.0, decay: 1.9, damp: 0.16, wet: 0.42 },
+      chapel: { seconds: 4.6, decay: 1.5, damp: 0.24, wet: 0.5 },
+      arena: { seconds: 3.4, decay: 1.8, damp: 0.2, wet: 0.4 },
+    };
+    const space = spaces[name] || spaces.house;
+    if (this.spaceName === name) return;
+    this.spaceName = name;
+    this.reverb.buffer = this.#impulse(space.seconds, space.decay, space.damp);
+    this.reverbSend.gain.setTargetAtTime(space.wet, this.ctx.currentTime, 0.5);
+  }
+
+  /** Pulls effects down while someone is speaking. */
+  duck(amount = 0.55, seconds = 0.25) {
+    if (!this.ready) return;
+    const now = this.ctx.currentTime;
+    this.sfxBus.gain.cancelScheduledValues(now);
+    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx * amount, now, seconds);
+  }
+
+  unduck(seconds = 0.5) {
+    if (!this.ready) return;
+    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx, this.ctx.currentTime, seconds);
   }
 
   resume() {
@@ -55075,6 +55237,7 @@ class AudioEngine {
     if (kind === 'master') this.master.gain.value = value;
     if (kind === 'sfx') this.sfxBus.gain.value = value;
     if (kind === 'music') this.musicBus.gain.value = value;
+    if (kind === 'voice' && this.voiceBus) this.voiceBus.gain.value = value;
   }
 
   #makeNoise(seconds, type) {
@@ -55365,9 +55528,13 @@ class AudioEngine {
     osc.stop(t + 1.1);
   }
 
-  /** The villain's laugh: descending pitched bursts over a low bed. */
+  /** The villain's laugh — voiced through the formant synth when available. */
   laugh() {
     if (!this.ready) return;
+    if (this.vocals?.ready) {
+      this.vocals.laugh('shepherd');
+      return;
+    }
     const t = this.ctx.currentTime;
     const count = 6 + Math.floor(Math.random() * 4);
     for (let i = 0; i < count; i += 1) {
@@ -55390,6 +55557,44 @@ class AudioEngine {
       osc.stop(t + offset + 0.2);
     }
     this.villainBed(count * 0.19 + 0.6);
+  }
+
+  /** Distant thunder: a long rumble with a slow attack and a rolling tail. */
+  thunder(distance = 1) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    const close = Math.max(0, 1 - distance * 0.35);
+    const length = 3.2 + distance * 2.4;
+
+    const rumble = this.#noise(this.brownBuffer);
+    rumble.playbackRate.value = 0.4 + Math.random() * 0.2;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(260 + close * 700, t);
+    lp.frequency.exponentialRampToValueAtTime(70, t + length);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.42 + close * 0.3, t + 0.18 + distance * 0.4);
+    // the roll: a couple of swells before it dies away
+    g.gain.exponentialRampToValueAtTime(0.16, t + length * 0.45);
+    g.gain.exponentialRampToValueAtTime(0.26, t + length * 0.62);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + length);
+    this.#chain([rumble, lp, g], this.sfxBus);
+    rumble.start(t);
+    rumble.stop(t + length + 0.2);
+
+    if (close > 0.4) {
+      const crack = this.#noise(this.noiseBuffer);
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 900;
+      const cg = this.ctx.createGain();
+      cg.gain.setValueAtTime(close * 0.4, t);
+      cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      this.#chain([crack, hp, cg], this.sfxBus);
+      crack.start(t);
+      crack.stop(t + 0.6);
+    }
   }
 
   stinger(kind = 'shock') {
@@ -55637,54 +55842,559 @@ class AudioEngine {
 }
 
 
+/* ===== src/engine/vocals.js ===== */
+// ---------------------------------------------------------------------------
+// مُخلِّق الأصوات البشرية — formant vocal synthesis.
+//
+// Browser text-to-speech gives us intelligible words but almost no acting: one
+// system voice, no breath, no grief. So the *performance* is synthesised here
+// instead — a glottal source driven through a per-character formant bank.
+//
+// Each character gets a different vocal tract:
+//   * an adult man   -> low F0, low formants, long tract
+//   * a nine-year-old-> high F0, formants shifted up ~30%, short tract
+//   * the villain    -> sub-bass F0, ring modulation, a growl an octave down
+//
+// From that one instrument we build sobs, gasps, screams, whimpers and laughs.
+// ---------------------------------------------------------------------------
+
+const TIMBRES = {
+  karim: {
+    f0: 104,
+    jitter: 0.026,
+    // [frequency, gain, bandwidth]
+    formants: [[560, 1.0, 80], [1080, 0.5, 100], [2480, 0.22, 160], [3300, 0.09, 220]],
+    breath: 0.22,
+    tilt: 1.55,
+  },
+  layla: {
+    f0: 298,
+    jitter: 0.042,
+    formants: [[760, 1.0, 110], [1780, 0.62, 130], [3120, 0.34, 190], [4100, 0.14, 250]],
+    breath: 0.34,
+    tilt: 1.35,
+  },
+  shepherd: {
+    f0: 61,
+    jitter: 0.07,
+    formants: [[360, 1.0, 65], [860, 0.62, 95], [1820, 0.3, 150]],
+    breath: 0.4,
+    tilt: 1.85,
+    ring: 33,
+    growl: true,
+  },
+  narrator: {
+    f0: 118,
+    jitter: 0.018,
+    formants: [[540, 1.0, 90], [1150, 0.45, 110], [2400, 0.18, 170]],
+    breath: 0.2,
+    tilt: 1.6,
+  },
+};
+
+// vowel targets the formant bank glides between, so an utterance moves instead
+// of sitting on one dead tone
+const VOWELS = {
+  a: [1.0, 1.0, 1.0],
+  e: [0.72, 1.5, 1.05],
+  i: [0.45, 1.9, 1.15],
+  o: [0.78, 0.68, 0.92],
+  u: [0.55, 0.52, 0.88],
+};
+
+class Vocals {
+  constructor(engine) {
+    this.engine = engine; // AudioEngine
+    this.wave = null;
+  }
+
+  get ctx() { return this.engine.ctx; }
+
+  get ready() { return Boolean(this.engine.ready); }
+
+  /** Glottal pulse: harmonics rolling off ~1/n^tilt, like a real vocal fold. */
+  #glottalWave(tilt) {
+    const key = `w${tilt.toFixed(2)}`;
+    this._waves = this._waves || {};
+    if (this._waves[key]) return this._waves[key];
+    const n = 40;
+    const real = new Float32Array(n);
+    const imag = new Float32Array(n);
+    for (let i = 1; i < n; i += 1) imag[i] = 1 / (i ** tilt);
+    const wave = this.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+    this._waves[key] = wave;
+    return wave;
+  }
+
+  #bus() {
+    return this.engine.voiceBus || this.engine.sfxBus;
+  }
+
+  /**
+   * One vocal gesture.
+   * @param {object} opts
+   *   who      character key
+   *   t0       start time offset (seconds from now)
+   *   dur      length in seconds
+   *   pitch    multiplier on the character's base F0
+   *   bend     [start, end] multipliers applied across the gesture
+   *   vowel    'a' | 'e' | 'i' | 'o' | 'u' or [from, to]
+   *   vibrato  [rateHz, depthCents]
+   *   tremble  0..1 amplitude wobble (crying)
+   *   noise    0..1 breathiness on top of the voiced source
+   *   gain     0..1 loudness
+   *   attack / release shaping
+   */
+  gesture(opts) {
+    if (!this.ready) return 0;
+    const timbre = TIMBRES[opts.who] || TIMBRES.karim;
+    const ctx = this.ctx;
+    const t = ctx.currentTime + (opts.t0 || 0);
+    const dur = Math.max(0.05, opts.dur ?? 0.4);
+    const gain = (opts.gain ?? 0.5) * (this.engine.volumes.voice ?? 1);
+    const bend = opts.bend || [1, 1];
+    const baseF0 = timbre.f0 * (opts.pitch ?? 1);
+
+    const out = ctx.createGain();
+    out.gain.value = 0;
+    // the formant bandpasses eat a lot of level; make it up after the sum
+    const makeup = ctx.createGain();
+    makeup.gain.value = 3.4;
+    out.connect(makeup).connect(this.#bus());
+    if (this.engine.reverbSend) {
+      const send = ctx.createGain();
+      send.gain.value = 0.5;
+      makeup.connect(send).connect(this.engine.reverbSend);
+    }
+
+    // --- glottal source ---
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(this.#glottalWave(timbre.tilt));
+    osc.frequency.setValueAtTime(baseF0 * bend[0], t);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(20, baseF0 * bend[1]), t + dur);
+
+    // jitter: micro pitch instability, the difference between a voice and a beep
+    const jitter = ctx.createOscillator();
+    jitter.type = 'triangle';
+    jitter.frequency.value = 7 + Math.random() * 9;
+    const jitterGain = ctx.createGain();
+    jitterGain.gain.value = baseF0 * timbre.jitter;
+    jitter.connect(jitterGain).connect(osc.frequency);
+
+    let vibrato = null;
+    let vibratoGain = null;
+    if (opts.vibrato) {
+      vibrato = ctx.createOscillator();
+      vibrato.type = 'sine';
+      vibrato.frequency.value = opts.vibrato[0];
+      vibratoGain = ctx.createGain();
+      vibratoGain.gain.value = baseF0 * (opts.vibrato[1] / 1200) * 4;
+      vibrato.connect(vibratoGain).connect(osc.frequency);
+    }
+
+    // --- optional monster layers ---
+    let ring = null;
+    let growl = null;
+    const sourceGain = ctx.createGain();
+    sourceGain.gain.value = 1;
+    osc.connect(sourceGain);
+
+    if (timbre.ring) {
+      const modulated = ctx.createGain();
+      modulated.gain.value = 0;
+      ring = ctx.createOscillator();
+      ring.type = 'sine';
+      ring.frequency.value = timbre.ring;
+      ring.connect(modulated.gain);
+      sourceGain.connect(modulated);
+      modulated.connect(sourceGain);
+    }
+    if (timbre.growl) {
+      growl = ctx.createOscillator();
+      growl.type = 'sawtooth';
+      growl.frequency.setValueAtTime(baseF0 * 0.5 * bend[0], t);
+      growl.frequency.exponentialRampToValueAtTime(Math.max(18, baseF0 * 0.5 * bend[1]), t + dur);
+      const growlGain = ctx.createGain();
+      growlGain.gain.value = 0.45;
+      const growlLp = ctx.createBiquadFilter();
+      growlLp.type = 'lowpass';
+      growlLp.frequency.value = 300;
+      growl.connect(growlLp).connect(growlGain).connect(sourceGain);
+    }
+
+    // --- formant bank ---
+    const vowelPair = Array.isArray(opts.vowel) ? opts.vowel : [opts.vowel || 'a', opts.vowel || 'a'];
+    const from = VOWELS[vowelPair[0]] || VOWELS.a;
+    const to = VOWELS[vowelPair[1]] || from;
+    timbre.formants.forEach((f, i) => {
+      const [freq, level, bw] = f;
+      const shiftA = from[i] ?? 1;
+      const shiftB = to[i] ?? shiftA;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(freq * shiftA, t);
+      filter.frequency.linearRampToValueAtTime(freq * shiftB, t + dur);
+      filter.Q.value = Math.max(1.2, (freq * shiftA) / bw);
+      const fg = ctx.createGain();
+      fg.gain.value = level;
+      sourceGain.connect(filter).connect(fg).connect(out);
+    });
+
+    // --- breath ---
+    let breathSrc = null;
+    const breathiness = (opts.noise ?? 0) + timbre.breath * 0.35;
+    if (breathiness > 0.01) {
+      breathSrc = ctx.createBufferSource();
+      breathSrc.buffer = this.engine.noiseBuffer;
+      breathSrc.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1400 + Math.random() * 900;
+      bp.Q.value = 0.7;
+      const bg = ctx.createGain();
+      bg.gain.value = breathiness * 0.32;
+      breathSrc.connect(bp).connect(bg).connect(out);
+    }
+
+    // --- envelope (+ tremble for crying) ---
+    const attack = opts.attack ?? Math.min(0.08, dur * 0.25);
+    const release = opts.release ?? Math.min(0.3, dur * 0.5);
+    out.gain.setValueAtTime(0.0001, t);
+    out.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + attack);
+    if (opts.tremble) {
+      const steps = Math.max(2, Math.floor(dur * 11));
+      for (let i = 0; i < steps; i += 1) {
+        const at = t + attack + (dur - attack - release) * (i / steps);
+        const wobble = 1 - opts.tremble * (i % 2 === 0 ? 0.55 : 0.05) * (0.6 + Math.random() * 0.6);
+        out.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain * wobble), at);
+      }
+    }
+    out.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    const stop = t + dur + 0.08;
+    osc.start(t); osc.stop(stop);
+    jitter.start(t); jitter.stop(stop);
+    if (vibrato) { vibrato.start(t); vibrato.stop(stop); }
+    if (ring) { ring.start(t); ring.stop(stop); }
+    if (growl) { growl.start(t); growl.stop(stop); }
+    if (breathSrc) { breathSrc.start(t); breathSrc.stop(stop); }
+    void vibratoGain;
+    return dur;
+  }
+
+  /** Air only — an exhale, a shaky inhale before a hard sentence. */
+  breath(who = 'karim', { inhale = false, intensity = 0.5, t0 = 0 } = {}) {
+    if (!this.ready) return 0;
+    const ctx = this.ctx;
+    const t = ctx.currentTime + t0;
+    const dur = inhale ? 0.42 : 0.6;
+    const src = ctx.createBufferSource();
+    src.buffer = this.engine.noiseBuffer;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    const base = who === 'layla' ? 1500 : who === 'shepherd' ? 520 : 950;
+    bp.frequency.setValueAtTime(inhale ? base * 0.7 : base * 1.25, t);
+    bp.frequency.linearRampToValueAtTime(inhale ? base * 1.5 : base * 0.6, t + dur);
+    bp.Q.value = 1.1;
+    const g = ctx.createGain();
+    const peak = 0.16 * intensity * (this.engine.volumes.voice ?? 1);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + (inhale ? dur * 0.7 : 0.08));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp).connect(g).connect(this.#bus());
+    if (this.engine.reverbSend) g.connect(this.engine.reverbSend);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+    return dur;
+  }
+
+  /** A single sob: caught breath, voiced break, falling pitch. */
+  sob(who = 'karim', { t0 = 0, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    this.breath(who, { inhale: true, intensity: 0.55 * intensity, t0 });
+    let cursor = t0 + 0.24;
+    const beats = 2 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < beats; i += 1) {
+      this.gesture({
+        who,
+        t0: cursor,
+        dur: 0.2 + Math.random() * 0.12,
+        pitch: (1.15 - i * 0.12) * (0.95 + Math.random() * 0.12),
+        bend: [1.12, 0.72],
+        vowel: ['e', 'o'],
+        tremble: 0.75,
+        noise: 0.4,
+        gain: 0.42 * intensity,
+        attack: 0.012,
+      });
+      cursor += 0.26 + Math.random() * 0.1;
+    }
+    this.breath(who, { inhale: false, intensity: 0.45 * intensity, t0: cursor });
+    return cursor + 0.5;
+  }
+
+  /** Sharp intake — fear, shock. */
+  gasp(who = 'karim', { t0 = 0, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    this.breath(who, { inhale: true, intensity: 1.1 * intensity, t0 });
+    this.gesture({
+      who,
+      t0: t0 + 0.16,
+      dur: 0.16,
+      pitch: 1.5,
+      bend: [1.0, 1.35],
+      vowel: 'a',
+      noise: 0.55,
+      gain: 0.3 * intensity,
+      attack: 0.01,
+    });
+    return 0.42;
+  }
+
+  /** The scream. Rises, cracks, falls apart. */
+  scream(who = 'karim', { t0 = 0, dur = 1.5, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    this.gesture({
+      who,
+      t0,
+      dur: dur * 0.62,
+      pitch: who === 'layla' ? 2.0 : 2.35,
+      bend: [0.85, 1.25],
+      vowel: ['a', 'a'],
+      vibrato: [6.5, 55],
+      noise: 0.75,
+      gain: 0.72 * intensity,
+      attack: 0.05,
+    });
+    // the voice breaking at the top
+    this.gesture({
+      who,
+      t0: t0 + dur * 0.58,
+      dur: dur * 0.46,
+      pitch: who === 'layla' ? 2.3 : 2.75,
+      bend: [1.3, 0.55],
+      vowel: ['a', 'e'],
+      vibrato: [11, 90],
+      tremble: 0.5,
+      noise: 1.0,
+      gain: 0.6 * intensity,
+      attack: 0.02,
+    });
+    this.breath(who, { inhale: false, intensity: 0.8, t0: t0 + dur });
+    return dur + 0.5;
+  }
+
+  /** Small, high, frightened. */
+  whimper(who = 'layla', { t0 = 0, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    let cursor = t0;
+    for (let i = 0; i < 3; i += 1) {
+      this.gesture({
+        who,
+        t0: cursor,
+        dur: 0.16,
+        pitch: 1.35 - i * 0.08,
+        bend: [1.1, 0.85],
+        vowel: ['i', 'e'],
+        tremble: 0.6,
+        noise: 0.45,
+        gain: 0.24 * intensity,
+      });
+      cursor += 0.22;
+    }
+    return cursor - t0;
+  }
+
+  /** Low, pained. */
+  groan(who = 'karim', { t0 = 0, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    this.gesture({
+      who,
+      t0,
+      dur: 0.9,
+      pitch: 0.82,
+      bend: [1.0, 0.7],
+      vowel: ['o', 'u'],
+      tremble: 0.3,
+      noise: 0.35,
+      gain: 0.4 * intensity,
+    });
+    return 1.0;
+  }
+
+  /** The villain's laugh, built from the same vocal tract as his speech. */
+  laugh(who = 'shepherd', { t0 = 0, intensity = 1 } = {}) {
+    if (!this.ready) return 0;
+    let cursor = t0;
+    const beats = 6 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < beats; i += 1) {
+      const decay = 1 - i / (beats * 1.6);
+      this.gesture({
+        who,
+        t0: cursor,
+        dur: 0.17,
+        pitch: (1.32 - i * 0.055) * (0.96 + Math.random() * 0.09),
+        bend: [1.25, 0.82],
+        vowel: i % 2 === 0 ? ['a', 'o'] : ['o', 'a'],
+        noise: 0.28,
+        gain: 0.5 * intensity * decay,
+        attack: 0.008,
+        release: 0.06,
+      });
+      cursor += 0.185 + Math.random() * 0.05;
+    }
+    this.breath(who, { inhale: true, intensity: 0.7, t0: cursor });
+    return cursor - t0 + 0.4;
+  }
+
+  /** Wordless dread — used for the villain speaking through the walls. */
+  drone(who = 'shepherd', seconds = 3, { t0 = 0 } = {}) {
+    if (!this.ready) return 0;
+    this.gesture({
+      who,
+      t0,
+      dur: seconds,
+      pitch: 0.62,
+      bend: [1, 0.88],
+      vowel: ['u', 'o'],
+      vibrato: [0.7, 25],
+      noise: 0.2,
+      gain: 0.16,
+      attack: 0.6,
+      release: 0.8,
+    });
+    return seconds;
+  }
+}
+
+
 /* ===== src/engine/voice.js ===== */
 // ---------------------------------------------------------------------------
-// Arabic voice-over driven by the Web Speech API, with a timed-subtitle
-// fallback for browsers or systems that ship no Arabic voice.
+// مخرج الحوار — dialogue director.
+//
+// Two layers make up a spoken line:
+//   1. the WORDS  — system text-to-speech, chosen and tuned per character
+//   2. the ACTING — breaths, sobs, gasps, screams and laughs from our own
+//                   formant synth (vocals.js), placed around and between the
+//                   words according to the line's emotion
+//
+// Layer 2 is what carries the performance, and it works identically whether or
+// not the machine has an Arabic voice installed — if TTS is missing we voice
+// the line as a murmur in the character's own timbre instead of going silent.
 // ---------------------------------------------------------------------------
 
 const CHARACTERS = {
-  karim: { name: 'كريم', color: '#cfe3ff', pitch: 0.72, rate: 0.92 },
-  layla: { name: 'ليلى', color: '#ffd9ea', pitch: 1.6, rate: 1.06 },
-  shepherd: { name: 'الراعي', color: '#ff5d5d', pitch: 0.32, rate: 0.72 },
-  radio: { name: 'اللاسلكي', color: '#9be7a5', pitch: 1.0, rate: 1.1 },
-  narrator: { name: '', color: '#c9c9d6', pitch: 0.85, rate: 0.9 },
+  karim: { name: 'كريم', color: '#cfe3ff', pitch: 0.58, rate: 0.9, gender: 'male' },
+  layla: { name: 'ليلى', color: '#ffd9ea', pitch: 1.88, rate: 1.14, gender: 'female' },
+  shepherd: { name: 'الراعي', color: '#ff5d5d', pitch: 0.16, rate: 0.66, gender: 'male' },
+  radio: { name: 'اللاسلكي', color: '#9be7a5', pitch: 1.0, rate: 1.1, gender: 'male' },
+  narrator: { name: '', color: '#c9c9d6', pitch: 0.8, rate: 0.86, gender: 'male' },
 };
 
+/**
+ * Emotions bend prosody and decide which non-verbal gestures wrap the line.
+ * `between` fires between clauses, which is what makes a crying line sound
+ * like crying rather than a sad sentence.
+ */
+const EMOTIONS = {
+  calm: { pitch: 0, rate: 0, volume: 1 },
+  soft: { pitch: -0.06, rate: -0.08, volume: 0.85, post: 'breath' },
+  tense: { pitch: 0.1, rate: 0.12, volume: 1 },
+  afraid: { pitch: 0.2, rate: 0.15, volume: 0.95, pre: 'gasp', post: 'breath' },
+  plead: { pitch: 0.14, rate: -0.04, volume: 1, pre: 'inhale', between: 'breath' },
+  cry: { pitch: 0.12, rate: -0.18, volume: 0.9, pre: 'sob', between: 'sob', post: 'breath' },
+  scream: { pitch: 0.34, rate: 0.26, volume: 1, pre: 'scream' },
+  angry: { pitch: -0.12, rate: 0.14, volume: 1, pre: 'inhale' },
+  mock: { pitch: 0.06, rate: -0.06, volume: 1, post: 'laugh' },
+  cold: { pitch: -0.14, rate: -0.12, volume: 0.95 },
+  whisper: { pitch: 0.04, rate: -0.12, volume: 0.5, pre: 'inhale' },
+  hurt: { pitch: -0.05, rate: -0.1, volume: 0.9, pre: 'groan' },
+};
+
+const FEMALE_HINTS = /hoda|laila|layla|salma|amira|amina|noura|nora|maryam|zeina|sana|fatima|female|woman|أنثى|هدى|ليلى/i;
+const MALE_HINTS = /majed|maged|naayf|nayef|tarik|tariq|hamed|omar|khalid|male|man|ذكر|ماجد/i;
+
 class VoiceDirector {
-  constructor(audio) {
+  constructor(audio, vocals) {
     this.audio = audio;
+    this.vocals = vocals;
     this.synth = window.speechSynthesis || null;
-    this.voice = null;
+    this.voices = {};
     this.enabled = true;
     this.volume = 1;
     this.queue = [];
     this.current = null;
     this.onSubtitle = null;
-    this.onLine = null;
+    this.hasArabicVoice = false;
+    this.voiceCount = 0;
     this._timer = null;
+    this._cancelled = false;
 
     if (this.synth) {
-      this.#pickVoice();
-      this.synth.addEventListener?.('voiceschanged', () => this.#pickVoice());
+      this.#pickVoices();
+      if (this.synth.addEventListener) {
+        this.synth.addEventListener('voiceschanged', () => this.#pickVoices());
+      }
     }
   }
 
-  #pickVoice() {
-    const voices = this.synth.getVoices?.() || [];
-    if (!voices.length) return;
-    const arabic = voices.filter((v) => /^ar/i.test(v.lang));
-    this.voice = arabic[0] || voices.find((v) => /^en/i.test(v.lang)) || voices[0];
+  /**
+   * Assigns a system voice per character. When the machine has more than one
+   * Arabic voice we deliberately hand different ones to the father and the
+   * daughter so they don't sound like the same person at two pitches.
+   */
+  #pickVoices() {
+    const all = this.synth.getVoices?.() || [];
+    if (!all.length) return;
+    this.voiceCount = all.length;
+    const arabic = all.filter((v) => /^ar/i.test(v.lang));
     this.hasArabicVoice = arabic.length > 0;
+    const pool = arabic.length ? arabic : all;
+
+    const score = (voice, wantFemale) => {
+      let s = 0;
+      if (/^ar/i.test(voice.lang)) s += 100;
+      if (voice.localService) s += 8;
+      const female = FEMALE_HINTS.test(voice.name);
+      const male = MALE_HINTS.test(voice.name);
+      if (wantFemale && female) s += 40;
+      if (!wantFemale && male) s += 40;
+      if (wantFemale && male) s -= 25;
+      if (!wantFemale && female) s -= 25;
+      return s;
+    };
+
+    const best = (wantFemale, exclude) => {
+      const ranked = pool
+        .filter((v) => !exclude || v.name !== exclude.name)
+        .sort((a, b) => score(b, wantFemale) - score(a, wantFemale));
+      return ranked[0] || pool[0];
+    };
+
+    const male = best(false);
+    const female = best(true, pool.length > 1 ? male : null);
+    this.voices = {
+      karim: male,
+      shepherd: male,
+      narrator: male,
+      radio: female,
+      layla: female,
+    };
+    this.voice = male;
   }
 
   get available() {
-    return Boolean(this.synth && this.voice);
+    return Boolean(this.synth && this.voices.karim);
   }
 
-  /**
-   * @param {{who:string, text:string, hold?:number}} line
-   */
+  get voiceReport() {
+    if (!this.synth) return 'المتصفح لا يدعم النطق';
+    if (!this.voices.karim) return 'لا توجد أصوات مثبّتة';
+    const names = new Set(Object.values(this.voices).map((v) => v && v.name).filter(Boolean));
+    if (!this.hasArabicVoice) return `لا يوجد صوت عربي — تُستخدم النبرات المُخلَّقة (${names.size} صوت متاح)`;
+    return [...names].join(' · ');
+  }
+
   say(line) {
     return new Promise((resolve) => {
       this.queue.push({ ...line, resolve });
@@ -55692,7 +56402,6 @@ class VoiceDirector {
     });
   }
 
-  /** Queue a whole conversation and resolve when the last line ends. */
   async conversation(lines) {
     for (const line of lines) {
       // eslint-disable-next-line no-await-in-loop
@@ -55700,58 +56409,150 @@ class VoiceDirector {
     }
   }
 
-  #estimate(text) {
-    return Math.max(1.4, text.length * 0.085) * 1000;
+  #estimate(text, rate) {
+    return Math.max(1.1, (text.length * 0.082) / Math.max(0.5, rate));
   }
 
-  #next() {
+  /** Splits a line into clauses so prosody and sobs can land between them. */
+  #clauses(text) {
+    const parts = text
+      .split(/(?<=[.!؟?…،:])\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return parts.length ? parts : [text];
+  }
+
+  #gesture(name, who, at = 0) {
+    const v = this.vocals;
+    if (!v || !v.ready) return 0;
+    switch (name) {
+      case 'sob': return v.sob(who, { t0: at });
+      case 'gasp': return v.gasp(who, { t0: at });
+      case 'scream': return v.scream(who, { t0: at, dur: who === 'layla' ? 1.2 : 1.6 });
+      case 'laugh': return v.laugh(who, { t0: at });
+      case 'groan': return v.groan(who, { t0: at });
+      case 'whimper': return v.whimper(who, { t0: at });
+      case 'breath': return v.breath(who, { t0: at, intensity: 0.6 });
+      case 'inhale': return v.breath(who, { t0: at, inhale: true, intensity: 0.75 });
+      default: return 0;
+    }
+  }
+
+  /** Voices a clause in the character's own timbre when TTS is unavailable. */
+  #murmur(who, text, profile) {
+    const v = this.vocals;
+    if (!v || !v.ready) return this.#estimate(text, profile.rate);
+    const syllables = Math.max(2, Math.min(14, Math.round(text.length / 3.2)));
+    const step = 0.135 / profile.rate;
+    const vowels = ['a', 'e', 'i', 'o', 'u'];
+    for (let i = 0; i < syllables; i += 1) {
+      const drift = 1 + Math.sin(i * 1.7) * 0.16 - (i / syllables) * 0.18;
+      v.gesture({
+        who,
+        t0: i * step,
+        dur: step * 0.85,
+        pitch: profile.pitchMul * drift,
+        bend: [drift, drift * 0.93],
+        vowel: [vowels[i % 5], vowels[(i + 2) % 5]],
+        noise: 0.22,
+        gain: 0.3 * profile.volume,
+        attack: 0.02,
+        release: step * 0.4,
+      });
+    }
+    return syllables * step + 0.15;
+  }
+
+  #speakClause(who, text, profile) {
+    return new Promise((resolve) => {
+      if (!this.enabled || !this.available) {
+        const seconds = this.#murmur(who, text, profile);
+        this._timer = setTimeout(resolve, seconds * 1000);
+        return;
+      }
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+        resolve();
+      };
+      try {
+        const utter = new SpeechSynthesisUtterance(text);
+        const voice = this.voices[who] || this.voices.karim;
+        utter.voice = voice;
+        utter.lang = this.hasArabicVoice ? voice.lang : 'ar-SA';
+        utter.pitch = Math.max(0, Math.min(2, profile.pitch));
+        utter.rate = Math.max(0.1, Math.min(2, profile.rate));
+        utter.volume = Math.max(0, Math.min(1, profile.volume * this.volume));
+        utter.onend = finish;
+        utter.onerror = finish;
+        // Chrome drops long utterances silently; the watchdog keeps the scene moving
+        this._timer = setTimeout(finish, (this.#estimate(text, profile.rate) + 3.5) * 1000);
+        this.synth.speak(utter);
+      } catch (err) {
+        this._timer = setTimeout(finish, this.#estimate(text, profile.rate) * 1000);
+      }
+    });
+  }
+
+  async #next() {
     this.current = this.queue.shift() || null;
     if (!this.current) {
       if (this.onSubtitle) this.onSubtitle(null);
+      this.audio?.unduck();
       return;
     }
     const line = this.current;
     const character = CHARACTERS[line.who] || CHARACTERS.narrator;
-    if (this.onSubtitle) this.onSubtitle({ character, text: line.text });
-    if (this.onLine) this.onLine(line);
+    const emotion = EMOTIONS[line.emo] || EMOTIONS.calm;
+    const who = CHARACTERS[line.who] ? line.who : 'narrator';
 
-    if (line.who === 'shepherd' && this.audio) {
-      this.audio.villainBed(Math.min(8, this.#estimate(line.text) / 1000 + 0.8));
-    }
-
-    const finish = () => {
-      if (this._timer) { clearTimeout(this._timer); this._timer = null; }
-      const done = line.resolve;
-      this.current = null;
-      if (done) done();
-      const gap = line.hold ?? 0.25;
-      setTimeout(() => { if (!this.current) this.#next(); }, gap * 1000);
+    const profile = {
+      pitch: Math.max(0, Math.min(2, character.pitch + emotion.pitch)),
+      pitchMul: 1 + emotion.pitch * 0.8,
+      rate: Math.max(0.4, character.rate + emotion.rate),
+      volume: emotion.volume,
     };
 
-    if (!this.enabled || !this.available) {
-      this._timer = setTimeout(finish, this.#estimate(line.text));
-      return;
+    if (this.onSubtitle) this.onSubtitle({ character, text: line.text, emo: line.emo });
+    this.audio?.duck(0.45);
+    if (who === 'shepherd') this.vocals?.drone('shepherd', Math.min(9, this.#estimate(line.text, profile.rate) + 1));
+
+    const wait = (seconds) => new Promise((r) => { this._timer = setTimeout(r, seconds * 1000); });
+
+    if (emotion.pre) await wait(this.#gesture(emotion.pre, who) * 0.85);
+    if (this._cancelled) return this.#finish(line);
+
+    const clauses = this.#clauses(line.text);
+    for (let i = 0; i < clauses.length; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await this.#speakClause(who, clauses[i], profile);
+      if (this._cancelled) return this.#finish(line);
+      if (emotion.between && i < clauses.length - 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await wait(this.#gesture(emotion.between, who) * 0.7);
+        if (this._cancelled) return this.#finish(line);
+      }
     }
 
-    try {
-      const utter = new SpeechSynthesisUtterance(line.text);
-      utter.voice = this.voice;
-      utter.lang = this.hasArabicVoice ? this.voice.lang : 'ar-SA';
-      utter.pitch = Math.max(0, Math.min(2, character.pitch));
-      utter.rate = Math.max(0.1, Math.min(2, character.rate));
-      utter.volume = this.volume;
-      utter.onend = finish;
-      utter.onerror = finish;
-      // Chrome silently drops long utterances; a watchdog keeps the story moving
-      this._timer = setTimeout(finish, this.#estimate(line.text) + 4000);
-      this.synth.speak(utter);
-    } catch (err) {
-      this._timer = setTimeout(finish, this.#estimate(line.text));
-    }
+    if (emotion.post) this.#gesture(emotion.post, who);
+    return this.#finish(line);
+  }
+
+  #finish(line) {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    this.current = null;
+    this._cancelled = false;
+    if (line.resolve) line.resolve();
+    const gap = line.hold ?? 0.3;
+    setTimeout(() => { if (!this.current) this.#next(); }, gap * 1000);
+    return undefined;
   }
 
   skip() {
     if (this.synth) this.synth.cancel();
+    this._cancelled = true;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     const line = this.current;
     this.current = null;
@@ -55762,13 +56563,198 @@ class VoiceDirector {
 
   clear() {
     if (this.synth) this.synth.cancel();
+    this._cancelled = true;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     this.queue.forEach((l) => l.resolve && l.resolve());
     this.queue.length = 0;
     const line = this.current;
     this.current = null;
     if (line?.resolve) line.resolve();
+    this.audio?.unduck();
     if (this.onSubtitle) this.onSubtitle(null);
+  }
+}
+
+
+/* ===== src/engine/cinema.js ===== */
+
+
+// ---------------------------------------------------------------------------
+// المخرج السينمائي — a shot-based camera director.
+//
+// A cutscene is authored the way previz is: you set a shot, play dialogue over
+// it, then cut to the next shot. Each shot animates its move over `dur` and
+// then holds, so timing never has to be guessed against the voice track.
+// ---------------------------------------------------------------------------
+
+const EASES = {
+  linear: (t) => t,
+  in: (t) => t * t,
+  out: (t) => 1 - (1 - t) ** 3,
+  inOut: (t) => (t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2),
+  // a slow creep that never quite settles — good for dread
+  creep: (t) => 1 - (1 - t) ** 1.35,
+};
+
+/** Cheap smooth noise for handheld camera drift. */
+function drift(t, seed) {
+  return Math.sin(t * 1.7 + seed) * 0.55
+       + Math.sin(t * 0.63 + seed * 2.3) * 0.32
+       + Math.sin(t * 3.1 + seed * 4.1) * 0.13;
+}
+
+class Cinema {
+  constructor(camera) {
+    this.camera = camera;
+    this.active = false;
+    this.shotState = null;
+    this.timeScale = 1;
+    this.letterbox = 0;        // 0..1, drives the DOM bars
+    this.letterboxTarget = 0;
+    this.time = 0;
+    this.baseFov = camera.fov;
+    this.focus = 0;            // 0 disables depth of field
+    this.aperture = 0;
+    this._tmpA = new THREE.Vector3();
+    this._tmpB = new THREE.Vector3();
+    this._look = new THREE.Vector3();
+    this.onLetterbox = null;
+  }
+
+  /** Resolves [x,y,z] | Object3D | {anchor, offset} into a world position. */
+  #resolve(spec, out) {
+    if (!spec) return out.set(0, 0, 0);
+    if (Array.isArray(spec)) return out.set(spec[0], spec[1], spec[2]);
+    if (spec.isObject3D) return spec.getWorldPosition(out);
+    if (spec.anchor) {
+      spec.anchor.getWorldPosition(out);
+      const o = spec.offset || [0, 0, 0];
+      return out.add(this._tmpB.set(o[0], o[1], o[2]));
+    }
+    return out.set(0, 0, 0);
+  }
+
+  begin() {
+    this.active = true;
+    this.letterboxTarget = 1;
+    this.time = 0;
+  }
+
+  /**
+   * Sets the current shot. Movement plays over `dur`, then the shot holds
+   * until it is replaced. Returns immediately — dialogue runs over the top.
+   */
+  shot(spec) {
+    if (!this.active) this.begin();
+    const state = {
+      spec,
+      t: 0,
+      dur: spec.dur ?? 3,
+      ease: EASES[spec.ease || 'inOut'] || EASES.inOut,
+      from: new THREE.Vector3(),
+      to: new THREE.Vector3(),
+      lookFrom: new THREE.Vector3(),
+      lookTo: new THREE.Vector3(),
+      blend: spec.blend ?? 0,
+      seed: Math.random() * 100,
+      prevPos: this.camera.position.clone(),
+      prevQuat: this.camera.quaternion.clone(),
+    };
+    this.#resolve(spec.pos, state.from);
+    this.#resolve(spec.posTo || spec.pos, state.to);
+    this.#resolve(spec.look, state.lookFrom);
+    this.#resolve(spec.lookTo || spec.look, state.lookTo);
+    this.shotState = state;
+    this.focus = spec.focus ?? 0;
+    this.aperture = spec.aperture ?? (spec.focus ? 0.6 : 0);
+    this.timeScale = spec.slowmo ?? 1;
+    if (spec.onEnter) spec.onEnter();
+    return state;
+  }
+
+  /** Ends the cutscene and hands the camera back to the player controller. */
+  end() {
+    this.active = false;
+    this.shotState = null;
+    this.letterboxTarget = 0;
+    this.timeScale = 1;
+    this.focus = 0;
+    this.aperture = 0;
+    this.camera.fov = this.baseFov;
+    this.camera.updateProjectionMatrix();
+  }
+
+  update(dt) {
+    // letterbox animates even after the scene ends, so the bars slide away
+    this.letterbox += (this.letterboxTarget - this.letterbox) * Math.min(1, dt * 3.4);
+    if (this.onLetterbox) this.onLetterbox(this.letterbox);
+    if (!this.active || !this.shotState) return;
+
+    const state = this.shotState;
+    const spec = state.spec;
+    state.t += dt;
+    this.time += dt;
+
+    // live anchors let a shot track a moving actor
+    if (spec.follow) {
+      this.#resolve(spec.pos, state.from);
+      this.#resolve(spec.posTo || spec.pos, state.to);
+      this.#resolve(spec.look, state.lookFrom);
+      this.#resolve(spec.lookTo || spec.look, state.lookTo);
+    }
+
+    const k = state.dur > 0 ? Math.min(1, state.t / state.dur) : 1;
+    const e = state.ease(k);
+
+    const pos = this._tmpA.copy(state.from).lerp(state.to, e);
+    if (spec.orbit) {
+      const angle = spec.orbit.from + (spec.orbit.to - spec.orbit.from) * e;
+      const radius = spec.orbit.radius ?? 4;
+      const centre = this._look.copy(state.lookFrom);
+      pos.set(
+        centre.x + Math.sin(angle) * radius,
+        pos.y,
+        centre.z + Math.cos(angle) * radius
+      );
+    }
+
+    const handheld = spec.handheld ?? 0.25;
+    if (handheld > 0) {
+      const t = this.time;
+      pos.x += drift(t, state.seed) * 0.03 * handheld;
+      pos.y += drift(t * 1.3, state.seed + 7) * 0.024 * handheld;
+      pos.z += drift(t * 0.8, state.seed + 13) * 0.03 * handheld;
+    }
+
+    const look = this._look.copy(state.lookFrom).lerp(state.lookTo, e);
+    if (handheld > 0) {
+      look.x += drift(this.time * 0.7, state.seed + 21) * 0.05 * handheld;
+      look.y += drift(this.time * 0.9, state.seed + 31) * 0.04 * handheld;
+    }
+
+    // blend in from wherever the camera was, so a soft cut is possible
+    if (state.blend > 0 && state.t < state.blend) {
+      const b = state.t / state.blend;
+      pos.lerpVectors(state.prevPos, pos, EASES.inOut(b));
+    }
+
+    this.camera.position.copy(pos);
+    this.camera.up.set(0, 1, 0);
+    this.camera.lookAt(look);
+    if (spec.roll) {
+      const roll = spec.roll * (spec.rollTo !== undefined ? (1 - e) + (spec.rollTo / spec.roll) * e : 1);
+      this.camera.rotateZ(roll);
+    }
+
+    const fov = (spec.fov ?? 42) + ((spec.fovTo ?? spec.fov ?? 42) - (spec.fov ?? 42)) * e;
+    if (Math.abs(this.camera.fov - fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+
+    if (spec.focusTo !== undefined) {
+      this.focus = (spec.focus ?? 3) + (spec.focusTo - (spec.focus ?? 3)) * e;
+    }
   }
 }
 
@@ -56452,6 +57438,324 @@ function buildLevel(def, textures) {
 }
 
 
+/* ===== src/game/environment.js ===== */
+
+
+// ---------------------------------------------------------------------------
+// البيئة — weather and air.
+//
+// Everything here follows the camera so a few thousand particles cover a whole
+// level. Rain and dust are Lines/Points, which the G-buffer pass skips, so they
+// cost almost nothing in the ray-marching stages.
+// ---------------------------------------------------------------------------
+
+const RAIN_RADIUS = 24;
+const DUST_RADIUS = 12;
+
+function skyDome(topColor, bottomColor, moonDir) {
+  const geometry = new THREE.SphereGeometry(300, 24, 16);
+  const material = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      uTop: { value: new THREE.Color(topColor) },
+      uBottom: { value: new THREE.Color(bottomColor) },
+      uMoon: { value: new THREE.Vector3(...moonDir).normalize() },
+      uFlash: { value: 0 },
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uTop;
+      uniform vec3 uBottom;
+      uniform vec3 uMoon;
+      uniform float uFlash;
+      varying vec3 vDir;
+
+      // cheap hashed value noise for the cloud band
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+                   mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+      }
+
+      void main() {
+        float h = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 col = mix(uBottom, uTop, pow(h, 0.7));
+        float clouds = noise(vDir.xz * 3.0 + vDir.y) * 0.5 + noise(vDir.xz * 7.0) * 0.25;
+        col = mix(col, col * 0.55, clouds * (1.0 - h) * 0.9);
+        float moon = pow(max(dot(normalize(vDir), uMoon), 0.0), 220.0);
+        float halo = pow(max(dot(normalize(vDir), uMoon), 0.0), 6.0);
+        col += vec3(0.9, 0.95, 1.0) * moon * 2.2;
+        col += vec3(0.28, 0.36, 0.55) * halo * 0.32 * (1.0 - clouds * 0.6);
+        col += vec3(0.5, 0.58, 0.8) * uFlash;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.userData.noGBuffer = true;
+  return mesh;
+}
+
+class Environment {
+  constructor(scene, config, audio) {
+    this.scene = scene;
+    this.config = config || {};
+    this.audio = audio;
+    this.nodes = [];
+    this.rain = null;
+    this.dust = null;
+    this.embers = null;
+    this.sky = null;
+    this.lightning = null;
+    this.flash = 0;
+    this.strikeTimer = 6 + Math.random() * 8;
+    this.thunderQueue = [];
+    this.wind = new THREE.Vector2(0.6, 0.2);
+
+    if (this.config.sky) this.#buildSky();
+    if (this.config.rain) this.#buildRain(this.config.rain);
+    if (this.config.dust) this.#buildDust(this.config.dust);
+    if (this.config.embers) this.#buildEmbers(this.config.embers);
+    if (this.config.lightning) this.#buildLightning();
+  }
+
+  #add(node) {
+    this.scene.add(node);
+    this.nodes.push(node);
+    return node;
+  }
+
+  #buildSky() {
+    this.sky = this.#add(skyDome(
+      this.config.skyTop ?? 0x0a1526,
+      this.config.skyBottom ?? 0x05070d,
+      this.config.moonDir ?? [-0.5, 0.75, 0.4]
+    ));
+  }
+
+  #buildRain(density) {
+    const count = Math.floor(2600 * density);
+    const positions = new Float32Array(count * 6);
+    this.rainData = new Float32Array(count * 4); // x, y, z, speed
+    for (let i = 0; i < count; i += 1) {
+      const x = (Math.random() - 0.5) * RAIN_RADIUS * 2;
+      const y = Math.random() * 26;
+      const z = (Math.random() - 0.5) * RAIN_RADIUS * 2;
+      const speed = 22 + Math.random() * 16;
+      this.rainData.set([x, y, z, speed], i * 4);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.LineBasicMaterial({
+      color: 0xa8c4e8, transparent: true, opacity: 0.34, depthWrite: false,
+    });
+    this.rain = new THREE.LineSegments(geometry, material);
+    this.rain.frustumCulled = false;
+    this.rain.userData.noGBuffer = true;
+    this.#add(this.rain);
+  }
+
+  #buildDust(density) {
+    const count = Math.floor(700 * density);
+    const positions = new Float32Array(count * 3);
+    this.dustData = new Float32Array(count * 4); // x, y, z, phase
+    for (let i = 0; i < count; i += 1) {
+      const x = (Math.random() - 0.5) * DUST_RADIUS * 2;
+      const y = Math.random() * 4.2;
+      const z = (Math.random() - 0.5) * DUST_RADIUS * 2;
+      this.dustData.set([x, y, z, Math.random() * 100], i * 4);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+      color: 0xd8cdb8,
+      size: 0.035,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.dust = new THREE.Points(geometry, material);
+    this.dust.frustumCulled = false;
+    this.dust.userData.noGBuffer = true;
+    this.#add(this.dust);
+  }
+
+  #buildEmbers(density) {
+    const count = Math.floor(420 * density);
+    const positions = new Float32Array(count * 3);
+    this.emberData = new Float32Array(count * 4); // x, y, z, rise
+    for (let i = 0; i < count; i += 1) {
+      this.emberData.set([
+        (Math.random() - 0.5) * 36,
+        Math.random() * 10,
+        (Math.random() - 0.5) * 36,
+        0.6 + Math.random() * 1.6,
+      ], i * 4);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+      color: 0xff7a2a,
+      size: 0.075,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.embers = new THREE.Points(geometry, material);
+    this.embers.frustumCulled = false;
+    this.embers.userData.noGBuffer = true;
+    this.#add(this.embers);
+  }
+
+  #buildLightning() {
+    this.lightning = new THREE.DirectionalLight(0xcfe0ff, 0);
+    this.lightning.position.set(30, 50, -20);
+    this.#add(this.lightning);
+  }
+
+  /** Fires a multi-flicker strike and schedules the thunder by distance. */
+  strike() {
+    const distance = 0.25 + Math.random() * 2.4; // km-ish
+    this.flashSequence = [
+      { at: 0, level: 1 },
+      { at: 0.07, level: 0.2 },
+      { at: 0.12, level: 0.85 },
+      { at: 0.22, level: 0.1 },
+      { at: 0.3, level: 0.45 },
+      { at: 0.5, level: 0 },
+    ];
+    this.flashTime = 0;
+    this.thunderQueue.push(distance * 1.6);
+  }
+
+  update(dt, time, camera) {
+    const cam = camera.position;
+
+    if (this.rain) {
+      const array = this.rain.geometry.attributes.position.array;
+      const data = this.rainData;
+      const count = data.length / 4;
+      const gust = 1 + Math.sin(time * 0.31) * 0.5;
+      for (let i = 0; i < count; i += 1) {
+        const o = i * 4;
+        data[o + 1] -= data[o + 3] * dt;
+        data[o] += this.wind.x * gust * dt * 3;
+        data[o + 2] += this.wind.y * gust * dt * 3;
+        if (data[o + 1] < -6) {
+          data[o] = (Math.random() - 0.5) * RAIN_RADIUS * 2;
+          data[o + 1] = 20 + Math.random() * 8;
+          data[o + 2] = (Math.random() - 0.5) * RAIN_RADIUS * 2;
+        }
+        // keep the volume centred on the player without moving each drop twice
+        const x = cam.x + ((data[o] % (RAIN_RADIUS * 2)) + RAIN_RADIUS * 2) % (RAIN_RADIUS * 2) - RAIN_RADIUS;
+        const z = cam.z + ((data[o + 2] % (RAIN_RADIUS * 2)) + RAIN_RADIUS * 2) % (RAIN_RADIUS * 2) - RAIN_RADIUS;
+        const y = data[o + 1];
+        const streak = data[o + 3] * 0.016;
+        const v = i * 6;
+        array[v] = x; array[v + 1] = y; array[v + 2] = z;
+        array[v + 3] = x - this.wind.x * gust * 0.12;
+        array[v + 4] = y + streak;
+        array[v + 5] = z - this.wind.y * gust * 0.12;
+      }
+      this.rain.geometry.attributes.position.needsUpdate = true;
+    }
+
+    if (this.dust) {
+      const array = this.dust.geometry.attributes.position.array;
+      const data = this.dustData;
+      const count = data.length / 4;
+      for (let i = 0; i < count; i += 1) {
+        const o = i * 4;
+        const phase = data[o + 3];
+        data[o] += Math.sin(time * 0.25 + phase) * dt * 0.14;
+        data[o + 1] += Math.sin(time * 0.17 + phase * 1.7) * dt * 0.06;
+        data[o + 2] += Math.cos(time * 0.21 + phase * 0.7) * dt * 0.14;
+        const wrap = (v, r) => ((v % (r * 2)) + r * 2) % (r * 2) - r;
+        array[i * 3] = cam.x + wrap(data[o], DUST_RADIUS);
+        array[i * 3 + 1] = 0.2 + ((data[o + 1] % 4.2) + 4.2) % 4.2;
+        array[i * 3 + 2] = cam.z + wrap(data[o + 2], DUST_RADIUS);
+      }
+      this.dust.geometry.attributes.position.needsUpdate = true;
+    }
+
+    if (this.embers) {
+      const array = this.embers.geometry.attributes.position.array;
+      const data = this.emberData;
+      const count = data.length / 4;
+      for (let i = 0; i < count; i += 1) {
+        const o = i * 4;
+        data[o + 1] += data[o + 3] * dt;
+        data[o] += Math.sin(time * 1.3 + i) * dt * 0.3;
+        if (data[o + 1] > 12) {
+          data[o + 1] = -0.5;
+          data[o] = (Math.random() - 0.5) * 36;
+          data[o + 2] = (Math.random() - 0.5) * 36;
+        }
+        array[i * 3] = data[o];
+        array[i * 3 + 1] = data[o + 1];
+        array[i * 3 + 2] = data[o + 2];
+      }
+      this.embers.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // --- lightning ---
+    if (this.lightning) {
+      this.strikeTimer -= dt;
+      if (this.strikeTimer <= 0) {
+        this.strikeTimer = 9 + Math.random() * 16;
+        this.strike();
+      }
+      if (this.flashSequence) {
+        this.flashTime += dt;
+        let level = 0;
+        for (let i = 0; i < this.flashSequence.length; i += 1) {
+          if (this.flashTime >= this.flashSequence[i].at) level = this.flashSequence[i].level;
+        }
+        this.flash += (level - this.flash) * Math.min(1, dt * 26);
+        if (this.flashTime > 0.65) { this.flashSequence = null; this.flash = 0; }
+      } else {
+        this.flash *= Math.max(0, 1 - dt * 6);
+      }
+      this.lightning.intensity = this.flash * 9;
+      if (this.sky) this.sky.material.uniforms.uFlash.value = this.flash * 0.7;
+    }
+
+    for (let i = this.thunderQueue.length - 1; i >= 0; i -= 1) {
+      this.thunderQueue[i] -= dt;
+      if (this.thunderQueue[i] <= 0) {
+        this.thunderQueue.splice(i, 1);
+        this.audio?.thunder();
+      }
+    }
+
+    if (this.sky) this.sky.position.copy(cam);
+  }
+
+  dispose() {
+    this.nodes.forEach((node) => {
+      this.scene.remove(node);
+      node.geometry?.dispose?.();
+      if (node.material?.dispose) node.material.dispose();
+    });
+    this.nodes.length = 0;
+  }
+}
+
+
 /* ===== src/game/levels.js ===== */
 // ---------------------------------------------------------------------------
 // Level blueprints.
@@ -56541,6 +57845,8 @@ const CH1 = {
   subtitle: 'الطريق المهجور',
   objective: 'اتبع الطريق إلى باب البيت',
   ambience: 'rain',
+  space: 'outdoor',
+  environment: { sky: true, rain: 1.0, lightning: true, skyTop: 0x0d1a2e, skyBottom: 0x04060b, moonDir: [-0.5, 0.72, 0.42] },
   wallHeight: 4.6,
   ceiling: false,
   defaultFloor: 'grass',
@@ -56603,6 +57909,8 @@ const CH2 = {
   subtitle: 'البهو المظلم',
   objective: 'اجمع ثلاثة مصاهر وأعد الكهرباء',
   ambience: 'house',
+  space: 'house',
+  environment: { dust: 0.8 },
   wallHeight: 4.2,
   defaultFloor: 'wood',
   wallMaterial: 'wallPaper',
@@ -56697,6 +58005,8 @@ const CH3 = {
   subtitle: 'القبو الغارق',
   objective: 'أدر الصمامات الثلاثة لتصريف المياه',
   ambience: 'basement',
+  space: 'basement',
+  environment: { dust: 0.4 },
   wallHeight: 3.6,
   defaultFloor: 'concrete',
   wallMaterial: 'wallStone',
@@ -56771,6 +58081,8 @@ const CH4 = {
   subtitle: 'المذبح',
   objective: 'اعثر على ليلى',
   ambience: 'chapel',
+  space: 'chapel',
+  environment: { dust: 0.9 },
   wallHeight: 6.5,
   defaultFloor: 'tile',
   wallMaterial: 'wallStone',
@@ -56832,6 +58144,8 @@ const CH5 = {
   subtitle: 'الانتقام',
   objective: 'اقتل الراعي',
   ambience: 'fire',
+  space: 'arena',
+  environment: { embers: 1.0, dust: 0.5 },
   wallHeight: 7.0,
   defaultFloor: 'tile',
   wallMaterial: 'wallStone',
@@ -57749,6 +59063,76 @@ class Enemy extends Actor {
   }
 }
 
+// --- the player's own body, used only by the camera during cutscenes --------
+
+class PlayerAvatar extends Actor {
+  constructor(level, position) {
+    super(level, position, {
+      radius: 0.4, height: 1.78, speed: 3, health: 9999, scale: 1.02,
+      palette: { skin: 0xb08a6a, cloth: 0x2f3742 },
+    });
+    this.mesh.visible = false;
+    this.pose = 'stand';
+    this.poseTime = 0;
+  }
+
+  show(position, yaw) {
+    this.position.copy(position);
+    this.position.y = 0;
+    if (yaw !== undefined) this.yaw = yaw;
+    this.mesh.visible = true;
+    this.syncMesh();
+  }
+
+  hide() { this.mesh.visible = false; }
+
+  setPose(pose) {
+    if (this.pose === pose) return;
+    this.pose = pose;
+    this.poseTime = 0;
+  }
+
+  update(dt) {
+    if (!this.mesh.visible) return;
+    this.poseTime += dt;
+    const ease = Math.min(1, this.poseTime * 1.6);
+    const body = this.body;
+    const lerp = (obj, prop, target, rate = 6) => {
+      obj[prop] += (target - obj[prop]) * Math.min(1, dt * rate);
+    };
+
+    if (this.pose === 'plead') {
+      // both arms out, palms up, leaning forward
+      body.arms.forEach((a) => {
+        lerp(a.shoulder.rotation, 'x', -1.15);
+        lerp(a.elbow.rotation, 'x', -0.35);
+      });
+      lerp(body.hips.rotation, 'x', 0.12);
+      lerp(body.neck.rotation, 'x', -0.08);
+      lerp(body.hips.position, 'y', 0.9);
+    } else if (this.pose === 'kneel') {
+      // dropped to his knees, head down, arms hanging
+      lerp(body.hips.position, 'y', 0.5, 3);
+      lerp(body.hips.rotation, 'x', 0.42, 3);
+      lerp(body.neck.rotation, 'x', 0.65, 3);
+      body.legs.forEach((l) => { lerp(l.hip.rotation, 'x', -1.35, 3); lerp(l.knee.rotation, 'x', 1.6, 3); });
+      body.arms.forEach((a) => { lerp(a.shoulder.rotation, 'x', 0.25); lerp(a.elbow.rotation, 'x', -0.2); });
+      // shoulders shaking with the crying
+      body.hips.rotation.z = Math.sin(this.poseTime * 9) * 0.02 * ease;
+    } else if (this.pose === 'rise') {
+      lerp(body.hips.position, 'y', 0.92, 2.2);
+      lerp(body.hips.rotation, 'x', -0.06, 2.2);
+      lerp(body.neck.rotation, 'x', -0.14, 2.2);
+      body.legs.forEach((l) => { lerp(l.hip.rotation, 'x', 0, 2.2); lerp(l.knee.rotation, 'x', 0, 2.2); });
+      body.arms.forEach((a) => { lerp(a.shoulder.rotation, 'x', -0.2); lerp(a.elbow.rotation, 'x', -0.5); });
+      body.hips.rotation.z *= 0.9;
+    } else {
+      this.animate(dt, false);
+    }
+    this.syncMesh();
+  }
+}
+
 // --- companion --------------------------------------------------------------
 
 class Companion extends Actor {
@@ -58110,12 +59494,25 @@ class HUD {
     this.crosshair = el('crosshair');
     this.deathScreen = el('deathScreen');
     this.objectiveBox = el('objective');
+    this.letterbox = el('letterbox');
     this.toastTimer = 0;
     this.promptTimer = 0;
+    this._letterbox = -1;
   }
 
   setVisible(visible) {
     this.root.classList.toggle('hidden', !visible);
+  }
+
+  /** 0 = no bars, 1 = full 2.39:1 cinema crop. Also hides the gameplay HUD. */
+  setLetterbox(value) {
+    if (!this.letterbox) return;
+    if (Math.abs(value - this._letterbox) < 0.004) return;
+    this._letterbox = value;
+    const height = value * 11.5;
+    this.letterbox.style.setProperty('--bar', `${height}vh`);
+    this.letterbox.classList.toggle('hidden', value < 0.005);
+    this.root.classList.toggle('cinematic', value > 0.35);
   }
 
   updateVitals(player) {
@@ -58213,127 +59610,131 @@ class HUD {
 
 /* ===== src/game/story.js ===== */
 // ---------------------------------------------------------------------------
-// السيناريو — the story layer.
+// السيناريو — story, direction and cutscenes.
 //
-// Each chapter exposes lifecycle hooks the game loop calls. Everything that is
-// spoken goes through ctx.say() so it is voiced *and* subtitled.
+// Every line carries an emotion, which the dialogue director turns into
+// prosody plus non-verbal acting (breaths, sobs, screams). Cutscenes are shot
+// lists: set a shot, play dialogue over it, cut.
 // ---------------------------------------------------------------------------
 
-const K = (text, hold) => ({ who: 'karim', text, hold });
-const L = (text, hold) => ({ who: 'layla', text, hold });
-const S = (text, hold) => ({ who: 'shepherd', text, hold });
-const N = (text, hold) => ({ who: 'narrator', text, hold });
+const K = (text, emo = 'calm', hold) => ({ who: 'karim', text, emo, hold });
+const L = (text, emo = 'calm', hold) => ({ who: 'layla', text, emo, hold });
+const S = (text, emo = 'cold', hold) => ({ who: 'shepherd', text, emo, hold });
+const N = (text, emo = 'soft', hold) => ({ who: 'narrator', text, emo, hold });
 
 const STORY = {
   // -------------------------------------------------------------------------
   road: {
     ambient: [
-      K('هذا المطر لا يريد أن يتوقف.'),
-      L('بابا، قدماي تؤلمانني.'),
-      K('لا تبتعدي عني يا ليلى.'),
+      K('هذا المطر لا يريد أن يتوقف.', 'soft'),
+      L('بابا، قدماي تؤلمانني.', 'soft'),
+      K('لا تبتعدي عني يا ليلى.', 'tense'),
     ],
+
     async start(ctx) {
       ctx.setObjective('اتبع الطريق إلى باب البيت');
-      await ctx.say([
-        N('في ليلة مطرٍ لا ينتهي، تعطّلت سيارةٌ على طريقٍ لا يمرّ به أحد.'),
-        K('حسناً… المحرك مات تماماً.'),
-        L('بابا، أين نحن؟'),
-        K('لا أعرف يا حبيبتي. لكن هناك بيت. سنطلب المساعدة ونعود.'),
-        L('البيت مظلم. لا أحد فيه.'),
-        K('ابقي خلفي وامسكي يدي. لن يحدث لكِ شيء. أعدكِ.'),
-      ]);
-      ctx.hint('W A S D للحركة · الفأرة للنظر · Shift للركض');
+      await ctx.openingCinematic();
     },
+
     triggers: {
       '!': async (ctx) => {
         await ctx.say([
-          L('بابا… لماذا كل النوافذ مسمّرة من الداخل؟'),
-          K('لأنه بيت قديم ومهجور. لا شيء أكثر من ذلك.'),
-          L('إذاً لماذا هناك ضوء في الطابق العلوي؟'),
+          L('بابا… لماذا كل النوافذ مسمّرة من الداخل؟', 'afraid'),
+          K('لأنه بيت قديم ومهجور. لا شيء أكثر من ذلك.', 'soft'),
+          L('إذاً لماذا هناك ضوء في الطابق العلوي؟', 'afraid'),
         ]);
         ctx.setObjective('ابحث في السقيفة ثم اصعد إلى الشرفة');
       },
       '?': async (ctx) => {
         await ctx.say([
-          K('الباب الأمامي مفتوح…'),
-          K('لم يكن مفتوحاً قبل قليل.'),
-          S('ادخل. أنا في انتظاركما منذ زمن طويل.'),
-          L('بابا؟ من قال ذلك؟'),
-          K('…لا أحد. ادخلي بسرعة.'),
+          K('الباب الأمامي مفتوح…', 'tense'),
+          K('لم يكن مفتوحاً قبل قليل.', 'afraid'),
+        ]);
+        ctx.audio.stinger('shock');
+        await ctx.say([
+          S('ادخل. أنا في انتظاركما منذ زمن طويل.', 'cold'),
+          L('بابا؟ من قال ذلك؟', 'afraid'),
+          K('…لا أحد. ادخلي بسرعة.', 'tense'),
         ]);
       },
     },
+
     async onPickup(item, ctx) {
       if (item.kind === 'flashlight') {
         ctx.player.hasFlashlight = true;
         ctx.player.flashlightOn = true;
-        await ctx.say([K('كشّاف. الحمد لله.')]);
+        await ctx.say([K('كشّاف. الحمد لله.', 'soft')]);
         ctx.hint('F لتشغيل الكشّاف وإطفائه');
       }
     },
+
     complete: (ctx) => ctx.flags.has('reachedExit'),
   },
 
   // -------------------------------------------------------------------------
   foyer: {
     ambient: [
-      L('بابا، أسمع أحداً يمشي فوقنا.'),
-      K('الغبار هنا لم يُلمس منذ سنوات.'),
-      L('لا أحب هذا المكان.'),
-      K('ابقي قريبة.'),
+      L('بابا، أسمع أحداً يمشي فوقنا.', 'afraid'),
+      K('الغبار هنا لم يُلمس منذ سنوات.', 'soft'),
+      L('لا أحب هذا المكان.', 'afraid'),
+      K('ابقي قريبة.', 'tense'),
     ],
+
     async start(ctx) {
       ctx.setObjective('ابحث عن ثلاثة مصاهر وأعد الكهرباء');
       await ctx.say([
-        K('أُغلق الباب خلفنا…'),
-        L('بابا، أنا خائفة.'),
-        K('لا بأس. الريح فقط. ابحثي معي عن هاتف أو لوحة كهرباء.'),
-        S('أهلاً بك في بيتي يا كريم.'),
-        K('من أنت؟! كيف تعرف اسمي؟'),
-        S('أنا أعرف كل من يدخل… وكل من لا يخرج.'),
-        S('وأشكرك. لقد أحضرتَ لي هديّةً صغيرة.'),
-        K('ابتعد عنها! هل تسمعني؟! ابتعد عنها!'),
+        K('أُغلق الباب خلفنا…', 'tense'),
+        L('بابا، أنا خائفة.', 'afraid'),
+        K('لا بأس. الريح فقط. ابحثي معي عن هاتف أو لوحة كهرباء.', 'soft'),
       ]);
+
+      // first contact with the voice in the walls — a short held shot
+      await ctx.villainReveal();
+
       ctx.hint('E للتفاعل · اجمع المصاهر الثلاثة');
     },
+
     triggers: {
       '*': async (ctx) => {
         if (ctx.flags.has('firstMonster')) return;
         ctx.flags.add('firstMonster');
         ctx.audio.stinger('shock');
+        ctx.shake(0.8);
         ctx.wakeEnemies(2);
-        await ctx.say([
-          K('يا الله… ما هذا الشيء؟!'),
-          L('بابا! خلفك!'),
-          K('اختبئي! اختبئي الآن!'),
-        ]);
         ctx.giveWeapon('axe');
+        await ctx.say([
+          K('يا الله… ما هذا الشيء؟!', 'scream'),
+          L('بابا! خلفك!', 'scream'),
+          K('اختبئي! اختبئي الآن!', 'angry'),
+        ]);
         ctx.hint('زر الفأرة الأيسر للضرب · 2 للفأس');
       },
       $: async (ctx) => {
         await ctx.say([
-          K('صور… كلها لعائلات. وكلها ممزقة عند وجه الأب.'),
-          S('كلهم جرّبوا ما ستجرّبه. كلهم بكوا في النهاية.'),
+          K('صور… كلها لعائلات. وكلها ممزقة عند وجه الأب.', 'tense'),
+          S('كلهم جرّبوا ما ستجرّبه. كلهم بكوا في النهاية.', 'mock'),
         ]);
       },
       '&': async (ctx) => {
-        await ctx.say([K('لوحة الكهرباء. ثلاثة مصاهر ناقصة.')]);
+        await ctx.say([K('لوحة الكهرباء. ثلاثة مصاهر ناقصة.', 'calm')]);
       },
     },
+
     async onPickup(item, ctx) {
       ctx.flags.add(`fuse${ctx.pickedFuses}`);
       if (ctx.pickedFuses === 1) {
         ctx.wakeEnemies(1);
-        await ctx.say([K('مصهر واحد. باقي اثنان.')]);
+        await ctx.say([K('مصهر واحد. باقي اثنان.', 'tense')]);
       } else if (ctx.pickedFuses === 2) {
         ctx.wakeEnemies(1);
-        await ctx.say([K('الثاني. أوشكت.'), L('بابا، أسرع أرجوك.')]);
+        await ctx.say([K('الثاني. أوشكت.', 'tense'), L('بابا، أسرع أرجوك.', 'afraid')]);
       } else {
         ctx.wakeEnemies(2);
-        await ctx.say([K('الثالث! هيا إلى اللوحة.')]);
+        await ctx.say([K('الثالث! هيا إلى اللوحة.', 'tense')]);
         ctx.setObjective('عد إلى لوحة الكهرباء عند بسطة القبو');
       }
     },
+
     async onInteract(target, ctx) {
       if (target.kind !== 'fuseBox') return;
       if (ctx.pickedFuses < 3) {
@@ -58343,43 +59744,47 @@ const STORY = {
       ctx.audio.lever();
       ctx.flags.add('powerOn');
       ctx.powerOn();
-      // unlock the way forward before the dialogue, never after it
       ctx.openExit();
       ctx.setObjective('انزل إلى القبو');
       await ctx.say([
-        K('هيا… اشتغل…'),
-        S('نور؟ كم هذا لطيف. الآن أستطيع أن أراكما جيداً.'),
-        K('الباب انفتح. القبو… لا خيار آخر.'),
+        K('هيا… اشتغل…', 'tense'),
+        S('نور؟ كم هذا لطيف. الآن أستطيع أن أراكما جيداً.', 'mock'),
+        K('الباب انفتح. القبو… لا خيار آخر.', 'tense'),
       ]);
     },
+
     complete: (ctx) => ctx.flags.has('reachedExit'),
   },
 
   // -------------------------------------------------------------------------
   basement: {
     ambient: [
-      L('الماء بارد يا بابا.'),
-      K('لا تتركي يدي.'),
-      K('هناك شيء يتحرك في الماء.'),
+      L('الماء بارد يا بابا.', 'afraid'),
+      K('لا تتركي يدي.', 'tense'),
+      K('هناك شيء يتحرك في الماء.', 'afraid'),
     ],
+
     async start(ctx) {
       ctx.setObjective('أدر الصمامات الثلاثة لتصريف المياه');
       await ctx.say([
-        K('الماء يصل إلى الركبة. انتبهي لخطواتك.'),
-        L('بابا، لماذا يوجد أقفاص هنا؟'),
-        K('لا تنظري إليها. انظري إلى ظهري فقط.'),
-        S('ثلاثة صمامات يا كريم. ثلاث فرصٍ لتغيّر رأيك.'),
-        S('اخرج وحدك… واتركها لي. وسأفتح لك الباب بنفسي.'),
-        K('لن تلمسها. ولو كان آخر شيء أفعله.'),
-        S('سنرى.'),
+        K('الماء يصل إلى الركبة. انتبهي لخطواتك.', 'tense'),
+        L('بابا، لماذا يوجد أقفاص هنا؟', 'afraid'),
+        K('لا تنظري إليها. انظري إلى ظهري فقط.', 'tense'),
+        S('ثلاثة صمامات يا كريم. ثلاث فرصٍ لتغيّر رأيك.', 'cold'),
+        S('اخرج وحدك… واتركها لي. وسأفتح لك الباب بنفسي.', 'cold'),
+        K('لن تلمسها. ولو كان آخر شيء أفعله.', 'angry'),
+        S('سنرى.', 'mock'),
       ]);
     },
+
     triggers: {
       '?': async (ctx) => {
         ctx.wakeEnemies(2);
-        await ctx.say([K('إنها تسبح تحت الماء… ابتعدي عن الحافة!')]);
+        ctx.audio.stinger('shock');
+        await ctx.say([K('إنها تسبح تحت الماء… ابتعدي عن الحافة!', 'scream')]);
       },
     },
+
     async onInteract(target, ctx) {
       if (target.kind !== 'valve' || target.used) return;
       target.used = true;
@@ -58387,34 +59792,36 @@ const STORY = {
       ctx.flags.add(`valve${ctx.usedValves}`);
       ctx.wakeEnemies(2);
       if (ctx.usedValves < 3) {
-        await ctx.say([K(`صمام ${ctx.usedValves} من ٣.`)]);
+        await ctx.say([K(`صمام ${ctx.usedValves} من ٣.`, 'tense')]);
         ctx.setObjective(`أدر الصمامات (${ctx.usedValves}/٣)`);
       } else {
         ctx.drainWater();
         ctx.openExit();
-        await ctx.say([K('الماء ينسحب! هيا يا ليلى، البا…')]);
+        await ctx.say([K('الماء ينسحب! هيا يا ليلى، البا…', 'tense')]);
         await ctx.abduction();
       }
     },
+
     complete: (ctx) => ctx.flags.has('reachedExit'),
   },
 
   // -------------------------------------------------------------------------
-  // الفصل المحوري: مشهد المذبح
   chapel: {
-    ambient: [K('ليلى! أين أنتِ؟!')],
+    ambient: [K('ليلى! أين أنتِ؟!', 'scream')],
+
     async start(ctx) {
       ctx.setObjective('اعثر على ليلى');
       await ctx.say([
-        K('ليلى! أنا قادم! اصمدي يا حبيبتي!'),
-        S('لا تركض. ستفوّت على نفسك المتعة.'),
+        K('ليلى! أنا قادم! اصمدي يا حبيبتي!', 'scream'),
+        S('لا تركض. ستفوّت على نفسك المتعة.', 'mock'),
       ]);
     },
+
     triggers: {
       '!': async (ctx) => {
         await ctx.say([
-          K('شموع… كأن أحداً كان ينتظر هذه الليلة.'),
-          S('ليس أحداً. أنا.'),
+          K('شموع… كأن أحداً كان ينتظر هذه الليلة.', 'tense'),
+          S('ليس أحداً. أنا.', 'cold'),
         ]);
       },
       '?': async (ctx) => {
@@ -58424,149 +59831,289 @@ const STORY = {
       },
     },
 
-    // ---- المشهد المحوري -----------------------------------------------------
+    // =====================================================================
+    // المشهد المحوري — the altar. Ten shots.
+    // =====================================================================
     async altarScene(ctx) {
-      const { audio, voice } = ctx;
-      ctx.lockPlayer(true);
+      const { audio, cine, at } = ctx;
+      cine.begin();
       ctx.sealDoors();
-      audio.door(false);
       ctx.setObjective('');
+      audio.door(false);
 
       const boss = ctx.spawnBoss();
       const layla = ctx.companion;
-      const lookAtLayla = (seconds) => { if (layla) ctx.focusOn(layla.mesh, seconds); };
-      ctx.focusOn(boss.mesh, 2.6);
+      ctx.avatar('stand', ctx.player.position, 0);
 
+      // 1 — ESTABLISHING: the whole nave, pushing slowly toward the altar
+      cine.shot({
+        pos: at(16, 12, 4.4), posTo: at(16, 10, 3.2),
+        look: at(16, 5, 1.7),
+        fov: 52, fovTo: 44, dur: 7, ease: 'creep', handheld: 0.3,
+      });
+      await ctx.wait(2.2);
+      await ctx.say([S('على مهلك يا كريم. لقد وصلتَ في الوقت المناسب تماماً.', 'mock')]);
+
+      // 2 — THE SHEPHERD: low, close, looking up at him
+      cine.shot({
+        pos: at(16, 7, 0.9), posTo: at(16, 6.6, 1.0),
+        look: boss.mesh, follow: true,
+        fov: 34, dur: 5, handheld: 0.55, focus: 3.2, aperture: 0.45, roll: 0.03,
+      });
+      await ctx.wait(1.4);
+
+      // 3 — LAYLA: shallow focus, she fills the frame
+      if (layla) {
+        cine.shot({
+          pos: at(18.2, 7, 1.15),
+          look: { anchor: layla.mesh, offset: [0, 0.95, 0] }, follow: true,
+          fov: 40, dur: 4, handheld: 0.45, focus: 2.0, aperture: 0.3,
+        });
+      }
       await ctx.say([
-        S('على مهلك يا كريم. لقد وصلتَ في الوقت المناسب تماماً.'),
-      ]);
-      lookAtLayla(2.0);
-      await ctx.say([
-        L('بابا… أنا خائفة.'),
-        K('لا تنظري إليه يا حبيبتي. انظري إليّ أنا. انظري إليّ فقط.'),
-        K('دعها تذهب. خذني أنا. أتوسل إليك… خذني أنا وحدي.'),
-        S('كلهم يقولون هذا. كلهم يظنون أن التوسّل عملة.'),
-        S('هذا هو الجزء الذي أحبّه: اللحظة التي يفهم فيها الأب…'),
-        S('…أنه لا يستطيع أن يفعل شيئاً.'),
-        K('لا. لا لا لا — لا تفعل! لااااا!'),
+        L('بابا… أنا خائفة.', 'afraid'),
+        K('لا تنظري إليه يا حبيبتي. انظري إليّ أنا. انظري إليّ فقط.', 'plead'),
       ]);
 
-      // الضربة
-      voice.clear();
+      // 4 — OVER THE SHOULDER: Karim on his feet, arms out, begging
+      ctx.avatar('plead');
+      cine.shot({
+        pos: at(14.8, 9.4, 1.85), posTo: at(15.1, 9.0, 1.8),
+        look: at(16, 5.4, 1.6),
+        fov: 46, dur: 6, handheld: 0.5, focus: 6.5, aperture: 0.8,
+      });
+      await ctx.say([
+        K('دعها تذهب. خذني أنا. أتوسل إليك… خذني أنا وحدي.', 'plead'),
+        S('كلهم يقولون هذا. كلهم يظنون أن التوسّل عملة.', 'cold'),
+        S('هذا هو الجزء الذي أحبّه: اللحظة التي يفهم فيها الأب…', 'mock'),
+      ]);
+
+      // 5 — THE PUSH IN before the blow
+      cine.shot({
+        pos: at(16, 8.4, 1.5), posTo: at(16, 7.4, 1.5),
+        look: at(16, 5, 1.7),
+        fov: 40, fovTo: 30, dur: 3.2, ease: 'in', handheld: 0.7,
+      });
+      await ctx.say([S('…أنه لا يستطيع أن يفعل شيئاً.', 'cold')]);
+      await ctx.say([K('لا. لا لا لا — لا تفعل! لااااا!', 'scream')]);
+
+      // 6 — THE CUT TO BLACK. We hear it; we don't watch it.
+      ctx.blackout(true);
       audio.stinger('shock');
       audio.impact(true);
-      ctx.shake(1.4);
+      ctx.shake(1.6);
+      await ctx.wait(0.5);
       ctx.killCompanion();
-      await ctx.wait(0.9);
-      await ctx.say([L('…بابا.')]);
-      await ctx.wait(1.6);
+      ctx.vocals?.scream('layla', { dur: 0.7, intensity: 0.9 });
+      await ctx.wait(1.5);
+      await ctx.say([L('…بابا.', 'whisper')]);
+      await ctx.wait(1.8);
 
-      // الحزن
-      audio.stinger('grief');
+      // 7 — AFTERMATH: he is already on his knees when the light comes back
+      ctx.avatar('kneel');
+      cine.slowmo(0.45);
+      cine.desaturate(0.65);
       ctx.grief(true);
-      lookAtLayla(1.4);
+      audio.stinger('grief');
+      cine.shot({
+        pos: at(16, 9.2, 0.85), posTo: at(16, 8.6, 0.8),
+        look: at(16, 6.2, 0.5),
+        fov: 44, dur: 9, ease: 'creep', handheld: 0.28, focus: 4.0, aperture: 0.55,
+      });
+      ctx.blackout(false, 2.4);
+      await ctx.wait(2.6);
+
       await ctx.say([
-        K('ليلى…'),
-        K('ليلى، افتحي عينيكِ. أرجوكِ… افتحي عينيكِ يا حبيبتي.'),
-        K('أنا هنا. بابا هنا. قومي… قومي أرجوكِ…'),
-        K('أنا آسف. أنا آسف. أنا آسف يا ليلى…'),
+        K('ليلى…', 'cry'),
+        K('ليلى، افتحي عينيكِ. أرجوكِ… افتحي عينيكِ يا حبيبتي.', 'cry'),
       ]);
 
-      // الضحك
-      ctx.focusOn(boss.mesh, 1.6);
+      // 8 — HER: the slowest move in the game
+      if (layla) {
+        cine.shot({
+          pos: { anchor: layla.mesh, offset: [1.5, 0.75, 1.3] },
+          posTo: { anchor: layla.mesh, offset: [1.05, 0.55, 0.95] },
+          look: { anchor: layla.mesh, offset: [0, 0.25, 0] },
+          fov: 42, dur: 12, ease: 'creep', handheld: 0.2, focus: 1.7, aperture: 0.28,
+        });
+      }
+      await ctx.say([
+        K('أنا هنا. بابا هنا. قومي… قومي أرجوكِ…', 'cry'),
+        K('أنا آسف. أنا آسف. أنا آسف يا ليلى…', 'cry'),
+      ]);
+
+      // 9 — THE LAUGH: dutch angle, low, backlit by the candles
+      cine.slowmo(1);
+      cine.shot({
+        pos: at(16, 7.2, 0.55),
+        look: boss.mesh, follow: true,
+        fov: 32, dur: 5, handheld: 0.6, roll: 0.075, focus: 3.0, aperture: 0.5,
+      });
       ctx.laugh();
+      await ctx.wait(1.4);
       await ctx.say([
-        S('ابكِ. ابكِ أكثر.'),
-        S('البكاء هو أجمل صوتٍ في هذا البيت. لا شيء يعلو عليه.'),
-        S('والآن اخرج. اترك جثتها لي واخرج، فأنا لا أقتل الآباء…'),
-        S('…أنا أتركهم يعيشون.'),
+        S('ابكِ. ابكِ أكثر.', 'mock'),
+        S('البكاء هو أجمل صوتٍ في هذا البيت. لا شيء يعلو عليه.', 'cold'),
+        S('والآن اخرج. اترك جثتها لي واخرج، فأنا لا أقتل الآباء…', 'cold'),
+        S('…أنا أتركهم يعيشون.', 'mock'),
       ]);
 
-      await ctx.wait(0.6);
-      await ctx.say([
-        K('لا.'),
-        K('لن أخرج.'),
-        K('سأقتلك.'),
-        S('…أخيراً.'),
-        S('أخيراً أصبحتَ مسلّياً يا كريم.'),
-      ]);
-      ctx.laugh();
-      await ctx.wait(1.0);
-      ctx.vanishBoss();
-      await ctx.say([
-        K('أينما ذهبت… سأجدك.'),
-      ]);
-
+      // 10 — THE TURN: back on Karim as he stands up
+      cine.desaturate(0);
       ctx.grief(false);
+      ctx.avatar('rise');
+      cine.shot({
+        pos: at(16.9, 8.0, 1.45), posTo: at(16.6, 7.7, 1.55),
+        look: { anchor: ctx.avatarObject(), offset: [0, 1.55, 0] }, follow: true,
+        fov: 38, dur: 7, ease: 'out', handheld: 0.42, focus: 1.5, aperture: 0.3,
+      });
+      await ctx.wait(1.0);
+      await ctx.say([
+        K('لا.', 'cold'),
+        K('لن أخرج.', 'cold'),
+        K('سأقتلك.', 'angry'),
+        S('…أخيراً.', 'cold'),
+        S('أخيراً أصبحتَ مسلّياً يا كريم.', 'mock'),
+      ]);
+      ctx.laugh();
+      await ctx.wait(1.2);
+      ctx.vanishBoss();
+      ctx.shake(1.2);
+      await ctx.say([K('أينما ذهبت… سأجدك.', 'angry')]);
+
+      // hand control back
+      cine.focus(0);
+      cine.end();
+      ctx.hideAvatar();
       ctx.rage();
       ctx.giveWeapon('shotgun', 24);
-      ctx.lockPlayer(false);
       ctx.setObjective('اتبعه. لا شيء آخر يهم الآن.');
       ctx.openExit();
       ctx.unsealDoors();
     },
+
     complete: (ctx) => ctx.flags.has('reachedExit'),
   },
 
   // -------------------------------------------------------------------------
   revenge: {
     ambient: [
-      K('اخرج! اخرج أيها الجبان!'),
-      K('لن أتعب قبلك.'),
+      K('اخرج! اخرج أيها الجبان!', 'angry'),
+      K('لن أتعب قبلك.', 'angry'),
     ],
+
     async start(ctx) {
       ctx.setObjective('اقتل الراعي');
-      await ctx.say([
-        K('لا مزيد من الهرب.'),
-      ]);
+      await ctx.say([K('لا مزيد من الهرب.', 'angry')]);
     },
+
     triggers: {
       '!': async (ctx) => {
         if (ctx.flags.has('bossStarted')) return;
         ctx.flags.add('bossStarted');
-        const boss = ctx.spawnBoss();
-        boss.state = 'chase';
-        ctx.audio.stinger('rage');
-        await ctx.say([
-          S('أنت غاضب. جيد.'),
-          S('الغضب يجعل اللحم أطيب.'),
-          K('هذا من أجل ليلى.'),
-        ]);
+        await STORY.revenge.bossIntro(ctx);
       },
     },
+
+    // ---- boss entrance --------------------------------------------------
+    async bossIntro(ctx) {
+      const { cine, at } = ctx;
+      cine.begin();
+      const boss = ctx.spawnBoss();
+      boss.state = 'idle';
+      ctx.avatar('stand', ctx.player.position, 0);
+      ctx.audio.stinger('rage');
+
+      cine.shot({
+        pos: at(15, 16, 5.6), posTo: at(15, 13, 3.0),
+        look: boss.mesh, follow: true,
+        fov: 50, fovTo: 38, dur: 5.5, ease: 'creep', handheld: 0.35,
+      });
+      await ctx.say([
+        S('أنت غاضب. جيد.', 'mock'),
+        S('الغضب يجعل اللحم أطيب.', 'cold'),
+      ]);
+
+      cine.shot({
+        pos: { anchor: ctx.avatarObject(), offset: [1.2, 1.6, 1.4] },
+        look: { anchor: ctx.avatarObject(), offset: [0, 1.5, 0] }, follow: true,
+        fov: 36, dur: 3.2, handheld: 0.5, focus: 1.9, aperture: 0.3,
+      });
+      await ctx.say([K('هذا من أجل ليلى.', 'angry')]);
+
+      cine.focus(0);
+      cine.end();
+      ctx.hideAvatar();
+      boss.state = 'chase';
+    },
+
     async onBossPhase(phase, ctx) {
       if (phase === 2) {
         await ctx.say([
-          S('أتظن أن الرصاص يوجع من مات مرتين؟'),
-          K('سأكتشف ذلك.'),
+          S('أتظن أن الرصاص يوجع من مات مرتين؟', 'mock'),
+          K('سأكتشف ذلك.', 'angry'),
         ]);
       } else if (phase === 3) {
         await ctx.say([
-          S('كفى لعباً!'),
-          K('نعم. كفى.'),
+          S('كفى لعباً!', 'angry'),
+          K('نعم. كفى.', 'cold'),
         ]);
       }
     },
+
     async onBossDeath(ctx) {
+      const { cine, at } = ctx;
+      cine.begin();
+      cine.slowmo(0.35);
       ctx.audio.stinger('grief');
+
+      const boss = ctx.bossObject();
+      if (boss) {
+        cine.shot({
+          pos: { anchor: boss.mesh, offset: [2.2, 1.4, 2.2] },
+          posTo: { anchor: boss.mesh, offset: [1.7, 0.9, 1.7] },
+          look: { anchor: boss.mesh, offset: [0, 0.6, 0] }, follow: true,
+          fov: 40, dur: 6, ease: 'out', handheld: 0.45, focus: 2.6, aperture: 0.35,
+        });
+      }
       await ctx.say([
-        S('هذا البيت… لن يدعك تخرج…'),
-        S('لن يدعك…'),
-        K('لا يهم.'),
-        K('لم أعد أريد الخروج.'),
+        S('هذا البيت… لن يدعك تخرج…', 'hurt'),
+        S('لن يدعك…', 'hurt'),
       ]);
-      await ctx.wait(1.2);
+
+      cine.slowmo(1);
+      ctx.avatar('kneel', ctx.player.position, 0);
+      cine.shot({
+        pos: { anchor: ctx.avatarObject(), offset: [1.6, 1.2, 1.8] },
+        look: { anchor: ctx.avatarObject(), offset: [0, 1.0, 0] }, follow: true,
+        fov: 42, dur: 5, handheld: 0.3, focus: 2.2, aperture: 0.4,
+      });
+      await ctx.say([
+        K('لا يهم.', 'soft'),
+        K('لم أعد أريد الخروج.', 'cry'),
+      ]);
+
+      // final crane: up and away, through the embers
+      cine.shot({
+        pos: { anchor: ctx.avatarObject(), offset: [1.6, 1.2, 1.8] },
+        posTo: at(15, 15, 14),
+        look: { anchor: ctx.avatarObject(), offset: [0, 1.0, 0] }, follow: true,
+        fov: 42, fovTo: 58, dur: 9, ease: 'inOut', handheld: 0.25,
+      });
+      await ctx.wait(2.5);
       await ctx.ending();
+      cine.end();
     },
+
     complete: (ctx) => ctx.flags.has('ending'),
   },
 };
 
 const ENDING_LINES = [
-  N('خرج كريم من البيت عند الفجر، وابنته بين ذراعيه.'),
-  N('لم يخبر أحداً بما رآه. ولم يعد أحدٌ يسمع صوت ضحكٍ في ذلك الطريق.'),
-  N('لكن في كل ليلة مطر… يقف على الطريق، وينتظر أن يضيع أحدهم.'),
-  K('ليلى… انتهى الأمر. نامي الآن.'),
+  N('خرج كريم من البيت عند الفجر، وابنته بين ذراعيه.', 'soft'),
+  N('لم يخبر أحداً بما رآه. ولم يعد أحدٌ يسمع صوت ضحكٍ في ذلك الطريق.', 'soft'),
+  N('لكن في كل ليلة مطر… يقف على الطريق، وينتظر أن يضيع أحدهم.', 'cold'),
+  K('ليلى… انتهى الأمر. نامي الآن.', 'cry'),
 ];
 
 const LAUGH_LINES = [
@@ -58593,6 +60140,9 @@ const LAUGH_LINES = [
 
 
 
+
+
+
 const SAVE_KEY = 'bayt.almahjur.save';
 const SETTINGS_KEY = 'bayt.almahjur.settings';
 
@@ -58602,7 +60152,9 @@ class Game {
     this.textures = buildTextureLibrary();
     this.rt = new RTRenderer(canvas, this.textures);
     this.audio = new AudioEngine();
-    this.voice = new VoiceDirector(this.audio);
+    this.vocals = new Vocals(this.audio);
+    this.audio.vocals = this.vocals;
+    this.voice = new VoiceDirector(this.audio, this.vocals);
     this.input = new Input(canvas);
     this.hud = new HUD();
 
@@ -58610,6 +60162,12 @@ class Game {
     this.camera.rotation.order = 'YXZ';
     this.player = new Player(this.camera, this.audio);
     this.weapons = new Weapons(this.camera, this.audio);
+    this.cinema = new Cinema(this.camera);
+    this.cinema.onLetterbox = (value) => this.hud.setLetterbox(value);
+    this.environment = null;
+    this.timeScale = 1;
+    this.tweens = [];
+    this.fadeRate = 1.4;
 
     this.scene = null;
     this.level = null;
@@ -58649,6 +60207,7 @@ class Game {
       invertY: false,
       master: 0.85,
       music: 0.7,
+      voiceVolume: 1,
       voice: true,
       subtitles: true,
     };
@@ -58683,6 +60242,7 @@ class Game {
     this.input.invertY = this.settings.invertY;
     this.audio.setVolume('master', this.settings.master);
     this.audio.setVolume('music', this.settings.music);
+    this.audio.setVolume('voice', this.settings.voiceVolume);
     this.voice.enabled = this.settings.voice;
     this.resize();
   }
@@ -58739,6 +60299,11 @@ class Game {
     this.griefMode = false;
     this.playerLocked = false;
     this.cinematicTarget = null;
+    this.tweens.forEach((t) => t.resolve());
+    this.tweens.length = 0;
+    this.fadeRate = 1.4;
+    this.rt.grade.focus = 0;
+    this.rt.grade.desaturate = 0;
 
     const scene = new THREE.Scene();
     this.scene = scene;
@@ -58796,7 +60361,12 @@ class Game {
     this.#buildInteractables();
     this.#collectLights();
 
+    this.environment = this.chapter.environment
+      ? new Environment(scene, this.chapter.environment, this.audio)
+      : null;
+
     this.audio.resume();
+    this.audio.setSpace(this.chapter.space || 'house');
     this.audio.setAmbience(this.chapter.ambience);
 
     this.hud.setVisible(true);
@@ -58815,6 +60385,10 @@ class Game {
     this.enemies = [];
     this.boss = null;
     this.companion = null;
+
+    const spawn = this.level.firstMarker('P') || new THREE.Vector3();
+    this.avatar = new PlayerAvatar(this.level, spawn);
+    this.avatar.addTo(this.scene);
 
     (this.chapter.enemies || []).forEach((spec) => {
       this.level.markerPositions(spec.marker).forEach((pos) => {
@@ -58911,6 +60485,13 @@ class Game {
 
   disposeChapter() {
     if (!this.scene) return;
+    this.cinema.end();
+    this.hud.setLetterbox(0);
+    this.environment?.dispose();
+    this.environment = null;
+    this.timeScale = 1;
+    this.tweens = [];
+    this.fadeRate = 1.4;
     this.boss?.clearProjectiles(this.scene);
     this.scene.remove(this.camera);
     this.level?.dispose();
@@ -58958,6 +60539,36 @@ class Game {
       lockPlayer: live((v) => { this.playerLocked = v; if (!v) this.cinematicTarget = null; }),
       focusOn: live((object, seconds) => { this.cinematicTarget = object; this.cinematicTimer = seconds; }),
       shake: live((amount) => { this.shakeAmount = Math.min(2, this.shakeAmount + amount); }),
+      cine: {
+        begin: live(() => { this.cinema.begin(); this.playerLocked = true; }),
+        shot: live((spec) => this.cinema.shot(spec)),
+        end: live(() => { this.cinema.end(); this.playerLocked = false; }),
+        focus: live((distance, aperture) => {
+          this.rt.grade.focus = distance;
+          this.rt.grade.aperture = aperture ?? 0.6;
+        }),
+        slowmo: live((scale) => { this.cinema.timeScale = scale; }),
+        desaturate: live((value) => { this.rt.grade.desaturate = value; }),
+      },
+      vocals: this.vocals,
+      camera: this.camera,
+      // world position of a grid cell — makes shot lists readable
+      at: (col, row, y = 1.6) => {
+        const p = this.level.toWorld(col, row);
+        return [p.x, y, p.z];
+      },
+      avatar: live((pose, position, yaw) => {
+        if (!this.avatar) return null;
+        if (position) this.avatar.show(position, yaw);
+        if (pose) this.avatar.setPose(pose);
+        return this.avatar;
+      }),
+      hideAvatar: live(() => this.avatar?.hide()),
+      avatarObject: () => this.avatar?.mesh,
+      bossObject: () => this.boss,
+      blackout: live((on, seconds) => this.blackout(on, seconds)),
+      openingCinematic: () => this.openingCinematic(),
+      villainReveal: () => this.villainReveal(),
       spawnBoss: () => this.spawnBoss(),
       vanishBoss: live(() => this.vanishBoss()),
       killCompanion: live(() => this.killCompanion()),
@@ -59083,26 +60694,157 @@ class Game {
     }, 2200);
   }
 
+  /** Hard cut to black (or back). `seconds` is the fade length. */
+  blackout(on, seconds = 0.25) {
+    this.fadeTarget = on ? 0 : 1;
+    this.fadeRate = 1 / Math.max(0.05, seconds);
+  }
+
+  /** Vector3 tween driven by the game loop, used to move actors in cutscenes. */
+  tween(vector, to, seconds) {
+    return new Promise((resolve) => {
+      this.tweens.push({
+        vector, from: vector.clone(), to: to.clone(), t: 0, dur: seconds, resolve,
+      });
+    });
+  }
+
+  #updateTweens(dt) {
+    for (let i = this.tweens.length - 1; i >= 0; i -= 1) {
+      const tw = this.tweens[i];
+      tw.t += dt;
+      const k = Math.min(1, tw.t / tw.dur);
+      const e = k < 0.5 ? 2 * k * k : 1 - ((-2 * k + 2) ** 2) / 2;
+      tw.vector.lerpVectors(tw.from, tw.to, e);
+      if (k >= 1) {
+        this.tweens.splice(i, 1);
+        tw.resolve();
+      }
+    }
+  }
+
+  #gridPos(col, row, y = 1.6) {
+    const p = this.level.toWorld(col, row);
+    return [p.x, y, p.z];
+  }
+
+  /** الفصل الأول: the arrival. Three shots before control is handed over. */
+  async openingCinematic() {
+    const token = this.token;
+    const at = (c, r, y) => this.#gridPos(c, r, y);
+    const spawn = this.player.position.clone();
+    const car = [spawn.x + 3.4, 1.0, spawn.z + 1.2];
+
+    this.cinema.begin();
+    this.playerLocked = true;
+    this.avatar?.show(spawn, 0);
+    this.avatar?.setPose('stand');
+
+    // 1 — the dead car in the rain
+    this.cinema.shot({
+      pos: [car[0] + 2.6, 1.3, car[2] + 2.4], posTo: [car[0] + 1.9, 1.15, car[2] + 1.9],
+      look: car, fov: 46, dur: 7, ease: 'creep', handheld: 0.45, focus: 3.4, aperture: 0.45,
+    });
+    await this.voice.conversation([
+      { who: 'narrator', text: 'في ليلة مطرٍ لا ينتهي، تعطّلت سيارةٌ على طريقٍ لا يمرّ به أحد.', emo: 'soft' },
+      { who: 'karim', text: 'حسناً… المحرك مات تماماً.', emo: 'tense' },
+    ]);
+    if (this.stale(token)) return;
+
+    // 2 — crane off the road and up to the house
+    this.cinema.shot({
+      pos: at(16, 21, 1.5), posTo: at(16, 21.5, 9.5),
+      look: at(16, 3, 4.2),
+      fov: 44, fovTo: 54, dur: 9, ease: 'creep', handheld: 0.3,
+    });
+    await this.voice.conversation([
+      { who: 'layla', text: 'بابا، أين نحن؟', emo: 'afraid' },
+      { who: 'karim', text: 'لا أعرف يا حبيبتي. لكن هناك بيت. سنطلب المساعدة ونعود.', emo: 'soft' },
+      { who: 'layla', text: 'البيت مظلم. لا أحد فيه.', emo: 'afraid' },
+    ]);
+    if (this.stale(token)) return;
+
+    // 3 — the two of them, close
+    this.cinema.shot({
+      pos: [spawn.x + 1.5, 1.62, spawn.z + 1.9],
+      look: { anchor: this.avatar.mesh, offset: [0, 1.45, 0] }, follow: true,
+      fov: 40, dur: 6, handheld: 0.5, focus: 2.3, aperture: 0.3,
+    });
+    await this.voice.conversation([
+      { who: 'karim', text: 'ابقي خلفي وامسكي يدي. لن يحدث لكِ شيء. أعدكِ.', emo: 'soft' },
+    ]);
+    if (this.stale(token)) return;
+
+    this.cinema.focus = 0;
+    this.rt.grade.focus = 0;
+    this.cinema.end();
+    this.avatar?.hide();
+    this.playerLocked = false;
+    this.hud.showToast('W A S D للحركة · الفأرة للنظر · Shift للركض', 6);
+  }
+
+  /** الفصل الثاني: the voice that knows your name. A slow pan across the hall. */
+  async villainReveal() {
+    const token = this.token;
+    const at = (c, r, y) => this.#gridPos(c, r, y);
+    const p = this.player.position.clone();
+
+    this.cinema.begin();
+    this.playerLocked = true;
+    this.cinema.shot({
+      pos: [p.x, 1.72, p.z],
+      look: at(14, 22, 3.4), lookTo: at(26, 22, 3.6),
+      fov: 48, dur: 11, ease: 'inOut', handheld: 0.6,
+    });
+    this.audio.stinger('shock');
+    await this.voice.conversation([
+      { who: 'shepherd', text: 'أهلاً بك في بيتي يا كريم.', emo: 'cold' },
+      { who: 'karim', text: 'من أنت؟! كيف تعرف اسمي؟', emo: 'afraid' },
+      { who: 'shepherd', text: 'أنا أعرف كل من يدخل… وكل من لا يخرج.', emo: 'cold' },
+      { who: 'shepherd', text: 'وأشكرك. لقد أحضرتَ لي هديّةً صغيرة.', emo: 'mock' },
+      { who: 'karim', text: 'ابتعد عنها! هل تسمعني؟! ابتعد عنها!', emo: 'scream' },
+    ]);
+    if (this.stale(token)) return;
+    this.cinema.end();
+    this.playerLocked = false;
+  }
+
   async abduction() {
     const token = this.token;
     const companion = this.companion;
     this.playerLocked = true;
     this.audio.stinger('shock');
-    this.shakeAmount = 1.2;
+    this.shakeAmount = 1.4;
+
     if (companion) {
-      this.cinematicTarget = companion.mesh;
-      this.cinematicTimer = 2.5;
+      this.cinema.begin();
+      this.cinema.shot({
+        pos: { anchor: companion.mesh, offset: [1.5, 1.15, 1.7] },
+        look: { anchor: companion.mesh, offset: [0, 0.85, 0] }, follow: true,
+        fov: 42, dur: 3.4, handheld: 0.8, focus: 2.3, aperture: 0.28,
+      });
+      this.vocals.scream('layla', { dur: 1.3 });
       this.audio.shriek();
-      await new Promise((r) => setTimeout(r, 900));
+      // she is dragged backwards into the dark
+      const away = new THREE.Vector3()
+        .subVectors(companion.position, this.player.position)
+        .setY(0).normalize().multiplyScalar(7);
+      companion.mode = 'gone';
+      await this.tween(companion.position, companion.position.clone().add(away), 0.85);
+      if (this.stale(token)) return;
+      this.blackout(true, 0.35);
+      await new Promise((r) => setTimeout(r, 700));
       if (this.stale(token)) return;
       companion.mesh.visible = false;
-      companion.mode = 'gone';
+      this.cinema.end();
+      this.blackout(false, 1.2);
     }
+
     await this.voice.conversation([
-      { who: 'layla', text: 'باباااا!' },
-      { who: 'karim', text: 'ليلى؟! ليلى!! لا!' },
-      { who: 'shepherd', text: 'قلتُ لك أن تخرج وحدك. الآن ستخرج وحدك فعلاً.' },
-      { who: 'karim', text: 'سآتي إليك. أقسم بالله سآتي إليك.' },
+      { who: 'layla', text: 'باباااا!', emo: 'scream' },
+      { who: 'karim', text: 'ليلى؟! ليلى!! لا!', emo: 'scream' },
+      { who: 'shepherd', text: 'قلتُ لك أن تخرج وحدك. الآن ستخرج وحدك فعلاً.', emo: 'mock' },
+      { who: 'karim', text: 'سآتي إليك. أقسم بالله سآتي إليك.', emo: 'angry' },
     ]);
     if (this.stale(token)) return;
     this.playerLocked = false;
@@ -59172,12 +60914,16 @@ class Game {
     if (this.onStateChange) this.onStateChange(paused ? 'paused' : 'playing');
   }
 
-  update(dt) {
+  update(rawDt) {
     const player = this.player;
     const level = this.level;
     if (!level) return;
 
-    const canAct = !this.playerLocked && player.alive && this.state === 'playing';
+    // slow motion during cutscenes affects the world, never the camera move
+    this.timeScale += (this.cinema.timeScale - this.timeScale) * Math.min(1, rawDt * 4);
+    const dt = rawDt * this.timeScale;
+
+    const canAct = !this.playerLocked && !this.cinema.active && player.alive && this.state === 'playing';
     this.input.enabled = canAct || this.state === 'playing';
 
     // cinematic camera override
@@ -59320,8 +61066,16 @@ class Game {
       this.audio.heartbeat(Math.min(1, stress));
     }
 
+    this.#updateTweens(rawDt);
+    this.avatar?.update(dt);
+    this.environment?.update(rawDt, this.elapsed, this.camera);
+
     this.#updateLightBudget();
     this.#updateGrade(dt, stress, threat);
+
+    // the director gets the last word on the camera
+    this.cinema.update(rawDt);
+    this.#applyShake(rawDt);
 
     if (!player.alive && this.state === 'playing') this.onDeath();
   }
@@ -59349,23 +61103,28 @@ class Game {
   #updateGrade(dt, stress, threat) {
     const grade = this.rt.grade;
     const player = this.player;
-    grade.fade += (this.fadeTarget - grade.fade) * Math.min(1, dt * 1.4);
+    grade.fade += (this.fadeTarget - grade.fade) * Math.min(1, dt * (this.fadeRate || 1.4));
     grade.damage = Math.max(player.damageFlash, grade.damage - dt * 1.2);
     if (!this.griefMode) {
       grade.sanity += (player.sanity - grade.sanity) * Math.min(1, dt * 1.5);
       grade.heartbeat += ((stress > 0.5 ? 1 : 0) - grade.heartbeat) * Math.min(1, dt * 2);
     }
+    grade.focus += (this.cinema.focus - grade.focus) * Math.min(1, dt * 3);
+    grade.aperture = this.cinema.aperture || grade.aperture;
     grade.grain = 0.026 + (1 - grade.sanity) * 0.06;
     grade.aberration = 0.5 + (1 - grade.sanity) * 0.8;
     this.rt.temporalBlend = threat ? this.rt.preset.temporal * 0.85 : this.rt.preset.temporal;
 
-    if (this.shakeAmount > 0) {
-      this.shakeAmount = Math.max(0, this.shakeAmount - dt * 1.8);
-      const s = this.shakeAmount * 0.035;
-      this.camera.rotation.x += (Math.random() - 0.5) * s;
-      this.camera.rotation.y += (Math.random() - 0.5) * s;
-      this.camera.rotation.z += (Math.random() - 0.5) * s * 0.6;
-    }
+  }
+
+  /** Applied last so it survives both the player controller and the director. */
+  #applyShake(dt) {
+    if (this.shakeAmount <= 0) return;
+    this.shakeAmount = Math.max(0, this.shakeAmount - dt * 1.8);
+    const s = this.shakeAmount * 0.035;
+    this.camera.rotation.x += (Math.random() - 0.5) * s;
+    this.camera.rotation.y += (Math.random() - 0.5) * s;
+    this.camera.rotation.z += (Math.random() - 0.5) * s * 0.6;
   }
 
   onDeath() {
@@ -59414,6 +61173,7 @@ class Game {
       this.level.update(dt * 0.2, this.elapsed);
     }
     this.hud.update(dt);
+    if (!(this.state === 'playing' && !this.paused)) this.cinema.update(dt);
     if (this.state === 'playing' || this.state === 'dead' || this.state === 'transition') {
       this.hud.updateVitals(this.player);
       this.hud.updateWeapon(this.weapons);
@@ -59546,17 +61306,15 @@ async function boot() {
   bind('sensitivityRange', 'sensitivity', Number);
   bind('masterRange', 'master', Number);
   bind('musicRange', 'music', Number);
+  bind('voiceVolumeRange', 'voiceVolume', Number);
   bind('invertToggle', 'invertY', Boolean);
   bind('voiceToggle', 'voice', Boolean);
   bind('subtitleToggle', 'subtitles', Boolean);
 
   const voiceNote = $('voiceNote');
   const refreshVoiceNote = () => {
-    voiceNote.textContent = game.voice.available
-      ? (game.voice.hasArabicVoice
-        ? `صوت عربي مُفعّل: ${game.voice.voice.name}`
-        : 'لا يوجد صوت عربي مثبّت — سيُستخدم أقرب صوت متاح مع الترجمة.')
-      : 'المتصفح لا يدعم النطق — ستظهر الحوارات كترجمة نصية مؤقّتة.';
+    voiceNote.innerHTML = `أصوات الشخصيات (التنفّس، البكاء، الصراخ، الضحك) مُخلَّقة داخل اللعبة `
+      + `لكل شخصية على حدة، وتعمل دائماً.<br><small>نطق الكلمات: ${game.voice.voiceReport}</small>`;
   };
   refreshVoiceNote();
   setTimeout(refreshVoiceNote, 1200);

@@ -233,6 +233,44 @@ canvas#view {
 
 #subtitleWho { font-weight: 700; margin-left: 10px; }
 
+/* ---------------------------------------------------------- letterbox --- */
+
+#letterbox {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 12;
+  --bar: 0vh;
+}
+
+#letterbox i {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--bar);
+  background: #000;
+  display: block;
+}
+
+#letterbox i:first-child { top: 0; }
+#letterbox i:last-child { bottom: 0; }
+
+/* during a shot the gameplay readouts get out of the way */
+#hud.cinematic #vitals,
+#hud.cinematic #weapon,
+#hud.cinematic #objective,
+#hud.cinematic #crosshair,
+#hud.cinematic #prompt,
+#hud.cinematic #bossBar {
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+
+#hud.cinematic #subtitle {
+  bottom: 15%;
+  font-size: 23px;
+}
+
 /* --------------------------------------------------------- chapter card --- */
 
 #chapterCard {

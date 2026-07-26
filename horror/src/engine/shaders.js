@@ -340,6 +340,14 @@ uniform sampler2D tBloomA;
 uniform sampler2D tBloomB;
 uniform sampler2D tBloomC;
 uniform sampler2D tNoise;
+uniform sampler2D tBlur;
+uniform sampler2D tDepth;
+
+uniform float uFocus;      // distance in metres the lens is focused on (0 = off)
+uniform float uAperture;   // how fast things fall out of focus
+uniform float uNear;
+uniform float uFar;
+uniform float uDesaturate;
 
 uniform float uTime;
 uniform float uBloomStrength;
@@ -378,6 +386,15 @@ void main() {
   color.g = texture2D(tDiffuse, uv).g;
   color.b = texture2D(tDiffuse, uv - centered * ab * 0.004).b;
 
+  // depth of field: only ever on during cutscenes
+  if (uFocus > 0.001) {
+    float d = texture2D(tDepth, uv).x;
+    float viewZ = (2.0 * uNear * uFar) / (uFar + uNear - (d * 2.0 - 1.0) * (uFar - uNear));
+    float coc = clamp(abs(viewZ - uFocus) / max(0.6, uFocus * uAperture), 0.0, 1.0);
+    coc = coc * coc * (3.0 - 2.0 * coc);
+    color = mix(color, texture2D(tBlur, uv).rgb, coc * 0.92);
+  }
+
   vec3 bloom = texture2D(tBloomA, uv).rgb * 0.5
              + texture2D(tBloomB, uv).rgb * 0.32
              + texture2D(tBloomC, uv).rgb * 0.2;
@@ -388,7 +405,7 @@ void main() {
 
   // filmic grade: crushed cold shadows, sickly warm highlights
   color = pow(color, vec3(1.0, 0.985, 0.96));
-  color = mix(vec3(dot(color, vec3(0.299, 0.587, 0.114))), color, 0.86 - panic * 0.25);
+  color = mix(vec3(dot(color, vec3(0.299, 0.587, 0.114))), color, 0.86 - panic * 0.25 - uDesaturate * 0.7);
   color.b += 0.035 * (1.0 - color.r);
   color.r += uDamage * 0.35 * (0.4 + dist);
 

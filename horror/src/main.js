@@ -105,17 +105,15 @@ async function boot() {
   bind('sensitivityRange', 'sensitivity', Number);
   bind('masterRange', 'master', Number);
   bind('musicRange', 'music', Number);
+  bind('voiceVolumeRange', 'voiceVolume', Number);
   bind('invertToggle', 'invertY', Boolean);
   bind('voiceToggle', 'voice', Boolean);
   bind('subtitleToggle', 'subtitles', Boolean);
 
   const voiceNote = $('voiceNote');
   const refreshVoiceNote = () => {
-    voiceNote.textContent = game.voice.available
-      ? (game.voice.hasArabicVoice
-        ? `صوت عربي مُفعّل: ${game.voice.voice.name}`
-        : 'لا يوجد صوت عربي مثبّت — سيُستخدم أقرب صوت متاح مع الترجمة.')
-      : 'المتصفح لا يدعم النطق — ستظهر الحوارات كترجمة نصية مؤقّتة.';
+    voiceNote.innerHTML = `أصوات الشخصيات (التنفّس، البكاء، الصراخ، الضحك) مُخلَّقة داخل اللعبة `
+      + `لكل شخصية على حدة، وتعمل دائماً.<br><small>نطق الكلمات: ${game.voice.voiceReport}</small>`;
   };
   refreshVoiceNote();
   setTimeout(refreshVoiceNote, 1200);

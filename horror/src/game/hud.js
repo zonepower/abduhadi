@@ -28,12 +28,25 @@ export class HUD {
     this.crosshair = el('crosshair');
     this.deathScreen = el('deathScreen');
     this.objectiveBox = el('objective');
+    this.letterbox = el('letterbox');
     this.toastTimer = 0;
     this.promptTimer = 0;
+    this._letterbox = -1;
   }
 
   setVisible(visible) {
     this.root.classList.toggle('hidden', !visible);
+  }
+
+  /** 0 = no bars, 1 = full 2.39:1 cinema crop. Also hides the gameplay HUD. */
+  setLetterbox(value) {
+    if (!this.letterbox) return;
+    if (Math.abs(value - this._letterbox) < 0.004) return;
+    this._letterbox = value;
+    const height = value * 11.5;
+    this.letterbox.style.setProperty('--bar', `${height}vh`);
+    this.letterbox.classList.toggle('hidden', value < 0.005);
+    this.root.classList.toggle('cinematic', value > 0.35);
   }
 
   updateVitals(player) {

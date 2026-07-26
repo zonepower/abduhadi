@@ -338,6 +338,76 @@ export class Enemy extends Actor {
   }
 }
 
+// --- the player's own body, used only by the camera during cutscenes --------
+
+export class PlayerAvatar extends Actor {
+  constructor(level, position) {
+    super(level, position, {
+      radius: 0.4, height: 1.78, speed: 3, health: 9999, scale: 1.02,
+      palette: { skin: 0xb08a6a, cloth: 0x2f3742 },
+    });
+    this.mesh.visible = false;
+    this.pose = 'stand';
+    this.poseTime = 0;
+  }
+
+  show(position, yaw) {
+    this.position.copy(position);
+    this.position.y = 0;
+    if (yaw !== undefined) this.yaw = yaw;
+    this.mesh.visible = true;
+    this.syncMesh();
+  }
+
+  hide() { this.mesh.visible = false; }
+
+  setPose(pose) {
+    if (this.pose === pose) return;
+    this.pose = pose;
+    this.poseTime = 0;
+  }
+
+  update(dt) {
+    if (!this.mesh.visible) return;
+    this.poseTime += dt;
+    const ease = Math.min(1, this.poseTime * 1.6);
+    const body = this.body;
+    const lerp = (obj, prop, target, rate = 6) => {
+      obj[prop] += (target - obj[prop]) * Math.min(1, dt * rate);
+    };
+
+    if (this.pose === 'plead') {
+      // both arms out, palms up, leaning forward
+      body.arms.forEach((a) => {
+        lerp(a.shoulder.rotation, 'x', -1.15);
+        lerp(a.elbow.rotation, 'x', -0.35);
+      });
+      lerp(body.hips.rotation, 'x', 0.12);
+      lerp(body.neck.rotation, 'x', -0.08);
+      lerp(body.hips.position, 'y', 0.9);
+    } else if (this.pose === 'kneel') {
+      // dropped to his knees, head down, arms hanging
+      lerp(body.hips.position, 'y', 0.5, 3);
+      lerp(body.hips.rotation, 'x', 0.42, 3);
+      lerp(body.neck.rotation, 'x', 0.65, 3);
+      body.legs.forEach((l) => { lerp(l.hip.rotation, 'x', -1.35, 3); lerp(l.knee.rotation, 'x', 1.6, 3); });
+      body.arms.forEach((a) => { lerp(a.shoulder.rotation, 'x', 0.25); lerp(a.elbow.rotation, 'x', -0.2); });
+      // shoulders shaking with the crying
+      body.hips.rotation.z = Math.sin(this.poseTime * 9) * 0.02 * ease;
+    } else if (this.pose === 'rise') {
+      lerp(body.hips.position, 'y', 0.92, 2.2);
+      lerp(body.hips.rotation, 'x', -0.06, 2.2);
+      lerp(body.neck.rotation, 'x', -0.14, 2.2);
+      body.legs.forEach((l) => { lerp(l.hip.rotation, 'x', 0, 2.2); lerp(l.knee.rotation, 'x', 0, 2.2); });
+      body.arms.forEach((a) => { lerp(a.shoulder.rotation, 'x', -0.2); lerp(a.elbow.rotation, 'x', -0.5); });
+      body.hips.rotation.z *= 0.9;
+    } else {
+      this.animate(dt, false);
+    }
+    this.syncMesh();
+  }
+}
+
 // --- companion --------------------------------------------------------------
 
 export class Companion extends Actor {

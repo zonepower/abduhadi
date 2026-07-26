@@ -4,11 +4,14 @@ import { buildTextureLibrary } from '../engine/textures.js';
 import { Input } from '../engine/input.js';
 import { AudioEngine } from '../engine/audio.js';
 import { VoiceDirector } from '../engine/voice.js';
+import { Vocals } from '../engine/vocals.js';
+import { Cinema } from '../engine/cinema.js';
+import { Environment } from './environment.js';
 import { Level, TILE } from './builder.js';
 import { LEVELS } from './levels.js';
 import { Player } from './player.js';
 import { Weapons } from './weapons.js';
-import { Enemy, Companion } from './enemies.js';
+import { Enemy, Companion, PlayerAvatar } from './enemies.js';
 import { Boss } from './boss.js';
 import { HUD } from './hud.js';
 import { STORY, ENDING_LINES, LAUGH_LINES } from './story.js';
@@ -22,7 +25,9 @@ export class Game {
     this.textures = buildTextureLibrary();
     this.rt = new RTRenderer(canvas, this.textures);
     this.audio = new AudioEngine();
-    this.voice = new VoiceDirector(this.audio);
+    this.vocals = new Vocals(this.audio);
+    this.audio.vocals = this.vocals;
+    this.voice = new VoiceDirector(this.audio, this.vocals);
     this.input = new Input(canvas);
     this.hud = new HUD();
 
@@ -30,6 +35,12 @@ export class Game {
     this.camera.rotation.order = 'YXZ';
     this.player = new Player(this.camera, this.audio);
     this.weapons = new Weapons(this.camera, this.audio);
+    this.cinema = new Cinema(this.camera);
+    this.cinema.onLetterbox = (value) => this.hud.setLetterbox(value);
+    this.environment = null;
+    this.timeScale = 1;
+    this.tweens = [];
+    this.fadeRate = 1.4;
 
     this.scene = null;
     this.level = null;
@@ -69,6 +80,7 @@ export class Game {
       invertY: false,
       master: 0.85,
       music: 0.7,
+      voiceVolume: 1,
       voice: true,
       subtitles: true,
     };
@@ -103,6 +115,7 @@ export class Game {
     this.input.invertY = this.settings.invertY;
     this.audio.setVolume('master', this.settings.master);
     this.audio.setVolume('music', this.settings.music);
+    this.audio.setVolume('voice', this.settings.voiceVolume);
     this.voice.enabled = this.settings.voice;
     this.resize();
   }
@@ -159,6 +172,11 @@ export class Game {
     this.griefMode = false;
     this.playerLocked = false;
     this.cinematicTarget = null;
+    this.tweens.forEach((t) => t.resolve());
+    this.tweens.length = 0;
+    this.fadeRate = 1.4;
+    this.rt.grade.focus = 0;
+    this.rt.grade.desaturate = 0;
 
     const scene = new THREE.Scene();
     this.scene = scene;
@@ -216,7 +234,12 @@ export class Game {
     this.#buildInteractables();
     this.#collectLights();
 
+    this.environment = this.chapter.environment
+      ? new Environment(scene, this.chapter.environment, this.audio)
+      : null;
+
     this.audio.resume();
+    this.audio.setSpace(this.chapter.space || 'house');
     this.audio.setAmbience(this.chapter.ambience);
 
     this.hud.setVisible(true);
@@ -235,6 +258,10 @@ export class Game {
     this.enemies = [];
     this.boss = null;
     this.companion = null;
+
+    const spawn = this.level.firstMarker('P') || new THREE.Vector3();
+    this.avatar = new PlayerAvatar(this.level, spawn);
+    this.avatar.addTo(this.scene);
 
     (this.chapter.enemies || []).forEach((spec) => {
       this.level.markerPositions(spec.marker).forEach((pos) => {
@@ -331,6 +358,13 @@ export class Game {
 
   disposeChapter() {
     if (!this.scene) return;
+    this.cinema.end();
+    this.hud.setLetterbox(0);
+    this.environment?.dispose();
+    this.environment = null;
+    this.timeScale = 1;
+    this.tweens = [];
+    this.fadeRate = 1.4;
     this.boss?.clearProjectiles(this.scene);
     this.scene.remove(this.camera);
     this.level?.dispose();
@@ -378,6 +412,36 @@ export class Game {
       lockPlayer: live((v) => { this.playerLocked = v; if (!v) this.cinematicTarget = null; }),
       focusOn: live((object, seconds) => { this.cinematicTarget = object; this.cinematicTimer = seconds; }),
       shake: live((amount) => { this.shakeAmount = Math.min(2, this.shakeAmount + amount); }),
+      cine: {
+        begin: live(() => { this.cinema.begin(); this.playerLocked = true; }),
+        shot: live((spec) => this.cinema.shot(spec)),
+        end: live(() => { this.cinema.end(); this.playerLocked = false; }),
+        focus: live((distance, aperture) => {
+          this.rt.grade.focus = distance;
+          this.rt.grade.aperture = aperture ?? 0.6;
+        }),
+        slowmo: live((scale) => { this.cinema.timeScale = scale; }),
+        desaturate: live((value) => { this.rt.grade.desaturate = value; }),
+      },
+      vocals: this.vocals,
+      camera: this.camera,
+      // world position of a grid cell — makes shot lists readable
+      at: (col, row, y = 1.6) => {
+        const p = this.level.toWorld(col, row);
+        return [p.x, y, p.z];
+      },
+      avatar: live((pose, position, yaw) => {
+        if (!this.avatar) return null;
+        if (position) this.avatar.show(position, yaw);
+        if (pose) this.avatar.setPose(pose);
+        return this.avatar;
+      }),
+      hideAvatar: live(() => this.avatar?.hide()),
+      avatarObject: () => this.avatar?.mesh,
+      bossObject: () => this.boss,
+      blackout: live((on, seconds) => this.blackout(on, seconds)),
+      openingCinematic: () => this.openingCinematic(),
+      villainReveal: () => this.villainReveal(),
       spawnBoss: () => this.spawnBoss(),
       vanishBoss: live(() => this.vanishBoss()),
       killCompanion: live(() => this.killCompanion()),
@@ -503,26 +567,157 @@ export class Game {
     }, 2200);
   }
 
+  /** Hard cut to black (or back). `seconds` is the fade length. */
+  blackout(on, seconds = 0.25) {
+    this.fadeTarget = on ? 0 : 1;
+    this.fadeRate = 1 / Math.max(0.05, seconds);
+  }
+
+  /** Vector3 tween driven by the game loop, used to move actors in cutscenes. */
+  tween(vector, to, seconds) {
+    return new Promise((resolve) => {
+      this.tweens.push({
+        vector, from: vector.clone(), to: to.clone(), t: 0, dur: seconds, resolve,
+      });
+    });
+  }
+
+  #updateTweens(dt) {
+    for (let i = this.tweens.length - 1; i >= 0; i -= 1) {
+      const tw = this.tweens[i];
+      tw.t += dt;
+      const k = Math.min(1, tw.t / tw.dur);
+      const e = k < 0.5 ? 2 * k * k : 1 - ((-2 * k + 2) ** 2) / 2;
+      tw.vector.lerpVectors(tw.from, tw.to, e);
+      if (k >= 1) {
+        this.tweens.splice(i, 1);
+        tw.resolve();
+      }
+    }
+  }
+
+  #gridPos(col, row, y = 1.6) {
+    const p = this.level.toWorld(col, row);
+    return [p.x, y, p.z];
+  }
+
+  /** الفصل الأول: the arrival. Three shots before control is handed over. */
+  async openingCinematic() {
+    const token = this.token;
+    const at = (c, r, y) => this.#gridPos(c, r, y);
+    const spawn = this.player.position.clone();
+    const car = [spawn.x + 3.4, 1.0, spawn.z + 1.2];
+
+    this.cinema.begin();
+    this.playerLocked = true;
+    this.avatar?.show(spawn, 0);
+    this.avatar?.setPose('stand');
+
+    // 1 — the dead car in the rain
+    this.cinema.shot({
+      pos: [car[0] + 2.6, 1.3, car[2] + 2.4], posTo: [car[0] + 1.9, 1.15, car[2] + 1.9],
+      look: car, fov: 46, dur: 7, ease: 'creep', handheld: 0.45, focus: 3.4, aperture: 0.45,
+    });
+    await this.voice.conversation([
+      { who: 'narrator', text: 'في ليلة مطرٍ لا ينتهي، تعطّلت سيارةٌ على طريقٍ لا يمرّ به أحد.', emo: 'soft' },
+      { who: 'karim', text: 'حسناً… المحرك مات تماماً.', emo: 'tense' },
+    ]);
+    if (this.stale(token)) return;
+
+    // 2 — crane off the road and up to the house
+    this.cinema.shot({
+      pos: at(16, 21, 1.5), posTo: at(16, 21.5, 9.5),
+      look: at(16, 3, 4.2),
+      fov: 44, fovTo: 54, dur: 9, ease: 'creep', handheld: 0.3,
+    });
+    await this.voice.conversation([
+      { who: 'layla', text: 'بابا، أين نحن؟', emo: 'afraid' },
+      { who: 'karim', text: 'لا أعرف يا حبيبتي. لكن هناك بيت. سنطلب المساعدة ونعود.', emo: 'soft' },
+      { who: 'layla', text: 'البيت مظلم. لا أحد فيه.', emo: 'afraid' },
+    ]);
+    if (this.stale(token)) return;
+
+    // 3 — the two of them, close
+    this.cinema.shot({
+      pos: [spawn.x + 1.5, 1.62, spawn.z + 1.9],
+      look: { anchor: this.avatar.mesh, offset: [0, 1.45, 0] }, follow: true,
+      fov: 40, dur: 6, handheld: 0.5, focus: 2.3, aperture: 0.3,
+    });
+    await this.voice.conversation([
+      { who: 'karim', text: 'ابقي خلفي وامسكي يدي. لن يحدث لكِ شيء. أعدكِ.', emo: 'soft' },
+    ]);
+    if (this.stale(token)) return;
+
+    this.cinema.focus = 0;
+    this.rt.grade.focus = 0;
+    this.cinema.end();
+    this.avatar?.hide();
+    this.playerLocked = false;
+    this.hud.showToast('W A S D للحركة · الفأرة للنظر · Shift للركض', 6);
+  }
+
+  /** الفصل الثاني: the voice that knows your name. A slow pan across the hall. */
+  async villainReveal() {
+    const token = this.token;
+    const at = (c, r, y) => this.#gridPos(c, r, y);
+    const p = this.player.position.clone();
+
+    this.cinema.begin();
+    this.playerLocked = true;
+    this.cinema.shot({
+      pos: [p.x, 1.72, p.z],
+      look: at(14, 22, 3.4), lookTo: at(26, 22, 3.6),
+      fov: 48, dur: 11, ease: 'inOut', handheld: 0.6,
+    });
+    this.audio.stinger('shock');
+    await this.voice.conversation([
+      { who: 'shepherd', text: 'أهلاً بك في بيتي يا كريم.', emo: 'cold' },
+      { who: 'karim', text: 'من أنت؟! كيف تعرف اسمي؟', emo: 'afraid' },
+      { who: 'shepherd', text: 'أنا أعرف كل من يدخل… وكل من لا يخرج.', emo: 'cold' },
+      { who: 'shepherd', text: 'وأشكرك. لقد أحضرتَ لي هديّةً صغيرة.', emo: 'mock' },
+      { who: 'karim', text: 'ابتعد عنها! هل تسمعني؟! ابتعد عنها!', emo: 'scream' },
+    ]);
+    if (this.stale(token)) return;
+    this.cinema.end();
+    this.playerLocked = false;
+  }
+
   async abduction() {
     const token = this.token;
     const companion = this.companion;
     this.playerLocked = true;
     this.audio.stinger('shock');
-    this.shakeAmount = 1.2;
+    this.shakeAmount = 1.4;
+
     if (companion) {
-      this.cinematicTarget = companion.mesh;
-      this.cinematicTimer = 2.5;
+      this.cinema.begin();
+      this.cinema.shot({
+        pos: { anchor: companion.mesh, offset: [1.5, 1.15, 1.7] },
+        look: { anchor: companion.mesh, offset: [0, 0.85, 0] }, follow: true,
+        fov: 42, dur: 3.4, handheld: 0.8, focus: 2.3, aperture: 0.28,
+      });
+      this.vocals.scream('layla', { dur: 1.3 });
       this.audio.shriek();
-      await new Promise((r) => setTimeout(r, 900));
+      // she is dragged backwards into the dark
+      const away = new THREE.Vector3()
+        .subVectors(companion.position, this.player.position)
+        .setY(0).normalize().multiplyScalar(7);
+      companion.mode = 'gone';
+      await this.tween(companion.position, companion.position.clone().add(away), 0.85);
+      if (this.stale(token)) return;
+      this.blackout(true, 0.35);
+      await new Promise((r) => setTimeout(r, 700));
       if (this.stale(token)) return;
       companion.mesh.visible = false;
-      companion.mode = 'gone';
+      this.cinema.end();
+      this.blackout(false, 1.2);
     }
+
     await this.voice.conversation([
-      { who: 'layla', text: 'باباااا!' },
-      { who: 'karim', text: 'ليلى؟! ليلى!! لا!' },
-      { who: 'shepherd', text: 'قلتُ لك أن تخرج وحدك. الآن ستخرج وحدك فعلاً.' },
-      { who: 'karim', text: 'سآتي إليك. أقسم بالله سآتي إليك.' },
+      { who: 'layla', text: 'باباااا!', emo: 'scream' },
+      { who: 'karim', text: 'ليلى؟! ليلى!! لا!', emo: 'scream' },
+      { who: 'shepherd', text: 'قلتُ لك أن تخرج وحدك. الآن ستخرج وحدك فعلاً.', emo: 'mock' },
+      { who: 'karim', text: 'سآتي إليك. أقسم بالله سآتي إليك.', emo: 'angry' },
     ]);
     if (this.stale(token)) return;
     this.playerLocked = false;
@@ -592,12 +787,16 @@ export class Game {
     if (this.onStateChange) this.onStateChange(paused ? 'paused' : 'playing');
   }
 
-  update(dt) {
+  update(rawDt) {
     const player = this.player;
     const level = this.level;
     if (!level) return;
 
-    const canAct = !this.playerLocked && player.alive && this.state === 'playing';
+    // slow motion during cutscenes affects the world, never the camera move
+    this.timeScale += (this.cinema.timeScale - this.timeScale) * Math.min(1, rawDt * 4);
+    const dt = rawDt * this.timeScale;
+
+    const canAct = !this.playerLocked && !this.cinema.active && player.alive && this.state === 'playing';
     this.input.enabled = canAct || this.state === 'playing';
 
     // cinematic camera override
@@ -740,8 +939,16 @@ export class Game {
       this.audio.heartbeat(Math.min(1, stress));
     }
 
+    this.#updateTweens(rawDt);
+    this.avatar?.update(dt);
+    this.environment?.update(rawDt, this.elapsed, this.camera);
+
     this.#updateLightBudget();
     this.#updateGrade(dt, stress, threat);
+
+    // the director gets the last word on the camera
+    this.cinema.update(rawDt);
+    this.#applyShake(rawDt);
 
     if (!player.alive && this.state === 'playing') this.onDeath();
   }
@@ -769,23 +976,28 @@ export class Game {
   #updateGrade(dt, stress, threat) {
     const grade = this.rt.grade;
     const player = this.player;
-    grade.fade += (this.fadeTarget - grade.fade) * Math.min(1, dt * 1.4);
+    grade.fade += (this.fadeTarget - grade.fade) * Math.min(1, dt * (this.fadeRate || 1.4));
     grade.damage = Math.max(player.damageFlash, grade.damage - dt * 1.2);
     if (!this.griefMode) {
       grade.sanity += (player.sanity - grade.sanity) * Math.min(1, dt * 1.5);
       grade.heartbeat += ((stress > 0.5 ? 1 : 0) - grade.heartbeat) * Math.min(1, dt * 2);
     }
+    grade.focus += (this.cinema.focus - grade.focus) * Math.min(1, dt * 3);
+    grade.aperture = this.cinema.aperture || grade.aperture;
     grade.grain = 0.026 + (1 - grade.sanity) * 0.06;
     grade.aberration = 0.5 + (1 - grade.sanity) * 0.8;
     this.rt.temporalBlend = threat ? this.rt.preset.temporal * 0.85 : this.rt.preset.temporal;
 
-    if (this.shakeAmount > 0) {
-      this.shakeAmount = Math.max(0, this.shakeAmount - dt * 1.8);
-      const s = this.shakeAmount * 0.035;
-      this.camera.rotation.x += (Math.random() - 0.5) * s;
-      this.camera.rotation.y += (Math.random() - 0.5) * s;
-      this.camera.rotation.z += (Math.random() - 0.5) * s * 0.6;
-    }
+  }
+
+  /** Applied last so it survives both the player controller and the director. */
+  #applyShake(dt) {
+    if (this.shakeAmount <= 0) return;
+    this.shakeAmount = Math.max(0, this.shakeAmount - dt * 1.8);
+    const s = this.shakeAmount * 0.035;
+    this.camera.rotation.x += (Math.random() - 0.5) * s;
+    this.camera.rotation.y += (Math.random() - 0.5) * s;
+    this.camera.rotation.z += (Math.random() - 0.5) * s * 0.6;
   }
 
   onDeath() {
@@ -834,6 +1046,7 @@ export class Game {
       this.level.update(dt * 0.2, this.elapsed);
     }
     this.hud.update(dt);
+    if (!(this.state === 'playing' && !this.paused)) this.cinema.update(dt);
     if (this.state === 'playing' || this.state === 'dead' || this.state === 'transition') {
       this.hud.updateVitals(this.player);
       this.hud.updateWeapon(this.weapons);

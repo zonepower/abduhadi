@@ -64,6 +64,8 @@
     </div>
   </div>
 
+  <div id="letterbox" class="hidden"><i></i><i></i></div>
+
   <div id="chapterCard" class="hidden">
     <h2 id="chapterTitle"></h2>
     <p id="chapterSubtitle"></p>
@@ -123,10 +125,13 @@
         <label for="musicRange">الموسيقى <b id="musicRangeValue"></b></label>
         <input id="musicRange" type="range" min="0" max="1" step="0.05" />
 
+        <label for="voiceVolumeRange">أصوات الشخصيات <b id="voiceVolumeRangeValue"></b></label>
+        <input id="voiceVolumeRange" type="range" min="0" max="1" step="0.05" />
+
         <label for="invertToggle">عكس المحور الرأسي</label>
         <input id="invertToggle" type="checkbox" />
 
-        <label for="voiceToggle">الحوارات الصوتية</label>
+        <label for="voiceToggle">نطق الكلمات (يعتمد على أصوات النظام)</label>
         <input id="voiceToggle" type="checkbox" />
 
         <label for="subtitleToggle">الترجمة النصية</label>

@@ -7,7 +7,7 @@ export class AudioEngine {
   constructor() {
     this.ctx = null;
     this.ready = false;
-    this.volumes = { master: 0.85, sfx: 1, music: 0.7 };
+    this.volumes = { master: 0.85, sfx: 1, music: 0.7, voice: 1 };
     this.ambienceNodes = [];
     this.ambienceName = null;
     this.creakTimer = 0;
@@ -30,6 +30,20 @@ export class AudioEngine {
     this.sfxBus.gain.value = this.volumes.sfx;
     this.sfxBus.connect(this.master);
 
+    // Dialogue gets its own bus so the mix can duck effects under a line.
+    this.voiceBus = this.ctx.createGain();
+    this.voiceBus.gain.value = this.volumes.voice ?? 1;
+    this.voiceBus.connect(this.master);
+
+    // A convolution send puts every voice and effect in the same room.
+    this.reverb = this.ctx.createConvolver();
+    this.reverbReturn = this.ctx.createGain();
+    this.reverbReturn.gain.value = 0.9;
+    this.reverbSend = this.ctx.createGain();
+    this.reverbSend.gain.value = 0.3;
+    this.reverbSend.connect(this.reverb).connect(this.reverbReturn).connect(this.master);
+    this.sfxBus.connect(this.reverbSend);
+
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.value = this.volumes.music;
     this.musicBus.connect(this.master);
@@ -41,6 +55,60 @@ export class AudioEngine {
     this.noiseBuffer = this.#makeNoise(4, 'white');
     this.brownBuffer = this.#makeNoise(6, 'brown');
     this.ready = true;
+    this.setSpace('house');
+  }
+
+  /**
+   * Generates a decaying-noise impulse response. `damp` rolls the tail's high
+   * end off so a stone basement sounds nothing like a wooden hall.
+   */
+  #impulse(seconds, decay, damp) {
+    const rate = this.ctx.sampleRate;
+    const length = Math.max(1, Math.floor(rate * seconds));
+    const buffer = this.ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch += 1) {
+      const data = buffer.getChannelData(ch);
+      let low = 0;
+      for (let i = 0; i < length; i += 1) {
+        const white = Math.random() * 2 - 1;
+        low += (white - low) * damp;         // one-pole lowpass on the tail
+        const envelope = (1 - i / length) ** decay;
+        // a few early reflections keep it from sounding like a wash
+        const early = (i < rate * 0.05 && Math.random() < 0.004) ? 2.5 : 1;
+        data[i] = low * envelope * early;
+      }
+    }
+    return buffer;
+  }
+
+  /** Swaps the room the whole mix sits in. */
+  setSpace(name) {
+    if (!this.ready) return;
+    const spaces = {
+      outdoor: { seconds: 0.5, decay: 3.2, damp: 0.5, wet: 0.1 },
+      house: { seconds: 1.7, decay: 2.4, damp: 0.32, wet: 0.28 },
+      basement: { seconds: 3.0, decay: 1.9, damp: 0.16, wet: 0.42 },
+      chapel: { seconds: 4.6, decay: 1.5, damp: 0.24, wet: 0.5 },
+      arena: { seconds: 3.4, decay: 1.8, damp: 0.2, wet: 0.4 },
+    };
+    const space = spaces[name] || spaces.house;
+    if (this.spaceName === name) return;
+    this.spaceName = name;
+    this.reverb.buffer = this.#impulse(space.seconds, space.decay, space.damp);
+    this.reverbSend.gain.setTargetAtTime(space.wet, this.ctx.currentTime, 0.5);
+  }
+
+  /** Pulls effects down while someone is speaking. */
+  duck(amount = 0.55, seconds = 0.25) {
+    if (!this.ready) return;
+    const now = this.ctx.currentTime;
+    this.sfxBus.gain.cancelScheduledValues(now);
+    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx * amount, now, seconds);
+  }
+
+  unduck(seconds = 0.5) {
+    if (!this.ready) return;
+    this.sfxBus.gain.setTargetAtTime(this.volumes.sfx, this.ctx.currentTime, seconds);
   }
 
   resume() {
@@ -54,6 +122,7 @@ export class AudioEngine {
     if (kind === 'master') this.master.gain.value = value;
     if (kind === 'sfx') this.sfxBus.gain.value = value;
     if (kind === 'music') this.musicBus.gain.value = value;
+    if (kind === 'voice' && this.voiceBus) this.voiceBus.gain.value = value;
   }
 
   #makeNoise(seconds, type) {
@@ -344,9 +413,13 @@ export class AudioEngine {
     osc.stop(t + 1.1);
   }
 
-  /** The villain's laugh: descending pitched bursts over a low bed. */
+  /** The villain's laugh — voiced through the formant synth when available. */
   laugh() {
     if (!this.ready) return;
+    if (this.vocals?.ready) {
+      this.vocals.laugh('shepherd');
+      return;
+    }
     const t = this.ctx.currentTime;
     const count = 6 + Math.floor(Math.random() * 4);
     for (let i = 0; i < count; i += 1) {
@@ -369,6 +442,44 @@ export class AudioEngine {
       osc.stop(t + offset + 0.2);
     }
     this.villainBed(count * 0.19 + 0.6);
+  }
+
+  /** Distant thunder: a long rumble with a slow attack and a rolling tail. */
+  thunder(distance = 1) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    const close = Math.max(0, 1 - distance * 0.35);
+    const length = 3.2 + distance * 2.4;
+
+    const rumble = this.#noise(this.brownBuffer);
+    rumble.playbackRate.value = 0.4 + Math.random() * 0.2;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(260 + close * 700, t);
+    lp.frequency.exponentialRampToValueAtTime(70, t + length);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.42 + close * 0.3, t + 0.18 + distance * 0.4);
+    // the roll: a couple of swells before it dies away
+    g.gain.exponentialRampToValueAtTime(0.16, t + length * 0.45);
+    g.gain.exponentialRampToValueAtTime(0.26, t + length * 0.62);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + length);
+    this.#chain([rumble, lp, g], this.sfxBus);
+    rumble.start(t);
+    rumble.stop(t + length + 0.2);
+
+    if (close > 0.4) {
+      const crack = this.#noise(this.noiseBuffer);
+      const hp = this.ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 900;
+      const cg = this.ctx.createGain();
+      cg.gain.setValueAtTime(close * 0.4, t);
+      cg.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      this.#chain([crack, hp, cg], this.sfxBus);
+      crack.start(t);
+      crack.stop(t + 0.6);
+    }
   }
 
   stinger(kind = 'shock') {
