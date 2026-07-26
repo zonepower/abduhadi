@@ -48,6 +48,13 @@ async function boot() {
     game.audio.resume();
     await game.loadChapter(chapterIndex);
     game.input.requestLock();
+    // If the page is embedded somewhere that refuses pointer lock, tell the
+    // player how to aim instead of leaving them stuck.
+    setTimeout(() => {
+      if (game.input.lockUnavailable && game.state === 'playing') {
+        game.hud.showToast('قفل المؤشّر غير متاح هنا — حرّك الفأرة نحو حواف الشاشة للنظر حولك', 9);
+      }
+    }, 1700);
   };
 
   $('newGameBtn').addEventListener('click', () => startGame(0));

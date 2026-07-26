@@ -90,9 +90,25 @@ async function main() {
       () => `<script>\n${escapeClose(script)}\n</script>`
     );
 
-  await writeFile(resolve(ROOT, 'game.html'), out, 'utf8');
-  const kb = Math.round(Buffer.byteLength(out) / 1024);
-  console.log(`game.html written (${kb} KB) — open it directly, no server needed.`);
+  const args = process.argv.slice(2);
+  const artifactIndex = args.indexOf('--artifact');
+
+  if (artifactIndex === -1) {
+    await writeFile(resolve(ROOT, 'game.html'), out, 'utf8');
+    const kb = Math.round(Buffer.byteLength(out) / 1024);
+    console.log(`game.html written (${kb} KB) — open it directly, no server needed.`);
+    return;
+  }
+
+  // Artifact hosts supply their own <!doctype>/<head>/<body>, so emit only the
+  // page contents: <title>, the inlined <style>, the markup and the script.
+  const target = args[artifactIndex + 1] || resolve(ROOT, 'artifact.html');
+  const title = (out.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || 'Game';
+  const body = out.slice(out.indexOf('<body>') + '<body>'.length, out.lastIndexOf('</body>'));
+  const style = (out.match(/<style>[\s\S]*?<\/style>/) || [''])[0];
+  const fragment = `<title>${title}</title>\n${style}\n${body.trim()}\n`;
+  await writeFile(target, fragment, 'utf8');
+  console.log(`${target} written (${Math.round(Buffer.byteLength(fragment) / 1024)} KB)`);
 }
 
 main().catch((err) => {

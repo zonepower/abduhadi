@@ -15,6 +15,13 @@ export class Input {
     this.enabled = true;
     this.onLockChange = null;
 
+    // Embedded contexts (an iframe without allow="pointer-lock") silently
+    // refuse the lock. We detect that and steer with the cursor's offset from
+    // the centre of the screen instead, so the game stays playable.
+    this.lockUnavailable = false;
+    this.edgeLook = { x: 0, y: 0, active: false };
+    this._lockProbe = null;
+
     this._onKeyDown = (e) => {
       if (!this.enabled) return;
       const code = e.code;
@@ -26,12 +33,21 @@ export class Input {
     };
     this._onKeyUp = (e) => { this.keys.delete(e.code); };
     this._onMouseMove = (e) => {
-      if (!this.locked || !this.enabled) return;
-      this.mouse.dx += e.movementX || 0;
-      this.mouse.dy += e.movementY || 0;
+      if (this.locked) {
+        if (!this.enabled) return;
+        this.mouse.dx += e.movementX || 0;
+        this.mouse.dy += e.movementY || 0;
+        return;
+      }
+      const rect = this.canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      this.edgeLook.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      this.edgeLook.y = ((e.clientY - rect.top) / rect.height) * 2 - 1;
+      this.edgeLook.active = true;
     };
     this._onMouseDown = (e) => {
-      if (!this.locked || !this.enabled) return;
+      if (!this.enabled) return;
+      if (!this.locked && !this.lockUnavailable) return;
       if (e.button === 0) { this.mouse.left = true; this.mouse.leftEdge = true; }
       if (e.button === 2) { this.mouse.right = true; this.mouse.rightEdge = true; }
     };
@@ -39,11 +55,20 @@ export class Input {
       if (e.button === 0) this.mouse.left = false;
       if (e.button === 2) this.mouse.right = false;
     };
-    this._onWheel = (e) => { if (this.locked) this.wheel += Math.sign(e.deltaY); };
+    this._onWheel = (e) => {
+      if (this.locked || this.lockUnavailable) this.wheel += Math.sign(e.deltaY);
+    };
     this._onContext = (e) => e.preventDefault();
     this._onLock = () => {
       this.locked = document.pointerLockElement === this.canvas;
-      if (!this.locked) { this.keys.clear(); this.mouse.left = false; this.mouse.right = false; }
+      if (this.locked) {
+        this.lockUnavailable = false;
+        if (this._lockProbe) { clearTimeout(this._lockProbe); this._lockProbe = null; }
+      } else {
+        this.keys.clear();
+        this.mouse.left = false;
+        this.mouse.right = false;
+      }
       if (this.onLockChange) this.onLockChange(this.locked);
     };
 
@@ -58,7 +83,21 @@ export class Input {
   }
 
   requestLock() {
-    if (!this.locked) this.canvas.requestPointerLock();
+    if (this.locked) return;
+    try {
+      const result = this.canvas.requestPointerLock();
+      if (result && typeof result.catch === 'function') {
+        result.catch(() => { this.lockUnavailable = true; });
+      }
+    } catch (err) {
+      this.lockUnavailable = true;
+    }
+    // No pointerlockchange means the request was refused outright.
+    if (this._lockProbe) clearTimeout(this._lockProbe);
+    this._lockProbe = setTimeout(() => {
+      this._lockProbe = null;
+      if (!this.locked) this.lockUnavailable = true;
+    }, 900);
   }
 
   releaseLock() {
@@ -83,6 +122,19 @@ export class Input {
   }
 
   consumeLook() {
+    if (!this.locked && this.lockUnavailable && this.edgeLook.active) {
+      const rate = (value, scale) => {
+        const dead = 0.16;
+        const magnitude = Math.abs(value);
+        if (magnitude < dead) return 0;
+        const t = (magnitude - dead) / (1 - dead);
+        return Math.sign(value) * t * t * scale * this.sensitivity;
+      };
+      return {
+        dx: rate(this.edgeLook.x, 0.055),
+        dy: rate(this.edgeLook.y, 0.032) * (this.invertY ? -1 : 1),
+      };
+    }
     const dx = this.mouse.dx * 0.0022 * this.sensitivity;
     const dy = this.mouse.dy * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
     this.mouse.dx = 0;
