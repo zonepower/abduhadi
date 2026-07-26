@@ -1,3 +1,15 @@
+# Browser Games
+
+This repository holds two standalone browser games built with vanilla
+[Three.js](https://threejs.org/) and no binary assets.
+
+| Game | Path | Description |
+| ---- | ---- | ----------- |
+| **GT Mini Tribute** | [`index.html`](index.html) | Gran Turismo-inspired driving demo (below) |
+| **البيت المهجور — الفصل الأخير** | [`horror/`](horror/README.md) | Arabic first-person horror game with a five-chapter story mode, voiced dialogue, and a hand-written screen-space ray tracing pipeline |
+
+---
+
 # GT Mini Tribute
 
 This project is a lightweight homage to the Gran Turismo series that runs entirely in the browser. It is **not** Gran Turismo 7, but it now pushes the single-file demo with a more grounded driving model, richer materials, and trackside atmosphere including a banked oval circuit, timing HUD, checkpoints, and responsive controls. Everything is implemented with vanilla [Three.js](https://threejs.org/).
