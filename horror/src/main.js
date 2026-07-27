@@ -39,13 +39,29 @@ async function boot() {
   game.start();
 
   // --- menu ---------------------------------------------------------------
-  const saved = game.loadProgress();
-  $('continueBtn').classList.toggle('hidden', !saved);
-  if (saved) $('continueLabel').textContent = LEVELS[saved.chapter]?.subtitle || '';
 
+  /**
+   * The save is written every time a chapter loads, so the Continue button has
+   * to be re-read each time the menu appears — reading it once at boot froze
+   * it on whatever chapter the page happened to start with, and hid it forever
+   * when the first save was created mid-session.
+   */
+  const refreshContinue = () => {
+    const saved = game.loadProgress();
+    $('continueBtn').classList.toggle('hidden', !saved);
+    if (saved) $('continueLabel').textContent = LEVELS[saved.chapter]?.subtitle || '';
+    return saved;
+  };
+  refreshContinue();
+
+  const showMenu = () => { refreshContinue(); show('menu'); };
+
+  // Every menu entry point starts from a clean slate, then the chapter hands
+  // out its own loadout — so a run is deterministic no matter what came before.
   const startGame = async (chapterIndex) => {
     show(null);
     game.audio.resume();
+    game.resetRun();
     await game.loadChapter(chapterIndex);
     game.input.requestLock();
     // If the page is embedded somewhere that refuses pointer lock, tell the
@@ -58,11 +74,14 @@ async function boot() {
   };
 
   $('newGameBtn').addEventListener('click', () => startGame(0));
-  $('continueBtn').addEventListener('click', () => startGame(saved ? saved.chapter : 0));
+  $('continueBtn').addEventListener('click', () => {
+    const saved = game.loadProgress();
+    startGame(saved ? saved.chapter : 0);
+  });
   $('chaptersBtn').addEventListener('click', () => show('chapters'));
   $('settingsBtn').addEventListener('click', () => show('settings'));
   $('backFromSettings').addEventListener('click', () => show(game.state === 'playing' ? 'pause' : 'menu'));
-  $('backFromChapters').addEventListener('click', () => show('menu'));
+  $('backFromChapters').addEventListener('click', showMenu);
 
   // chapter list
   const list = $('chapterList');
@@ -125,19 +144,19 @@ async function boot() {
     game.setPaused(true);
     game.state = 'menu';
     game.hud.setVisible(false);
-    show('menu');
+    showMenu();
   });
   $('retryBtn').addEventListener('click', () => { game.retry(); });
   $('menuFromDeath').addEventListener('click', () => {
     game.hud.showDeath(false);
     game.hud.setVisible(false);
     game.state = 'menu';
-    show('menu');
+    showMenu();
   });
   $('endingBtn').addEventListener('click', () => {
     game.state = 'menu';
     game.hud.setVisible(false);
-    show('menu');
+    showMenu();
   });
 
   game.onStateChange = (state) => {
@@ -152,7 +171,7 @@ async function boot() {
     else if (game.paused && !screens.settings.classList.contains('hidden')) show('pause');
   });
 
-  show('menu');
+  showMenu();
 }
 
 boot();

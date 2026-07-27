@@ -485,6 +485,28 @@ export class Game {
   }
 
   /**
+   * Wipes everything the player carries between runs.
+   *
+   * Menu entry points share one Game instance, so without this a "new game"
+   * after finishing a playthrough would start the prologue holding the
+   * shotgun and the torch — which is exactly what chapter 1 is built around
+   * not having.
+   */
+  resetRun() {
+    this.weapons.owned = new Set(['hands']);
+    this.weapons.ammo = { revolver: 0, shotgun: 0 };
+    this.weapons.reserve = { revolver: 0, shotgun: 0 };
+    this.weapons.reloading = 0;
+    this.weapons.setWeapon('hands');
+    this.weapons.shells?.clear();
+    this.player.hasFlashlight = false;
+    this.player.flashlightOn = false;
+    this.player.battery = 1;
+    this.player.reset();
+    this.hud.updateWeapon(this.weapons);
+  }
+
+  /**
    * Grants the chapter's minimum kit. Jumping straight to a late chapter from
    * the menu must never leave you unarmed, and a retry must not stack ammo,
    * so this only ever tops up to a floor.
