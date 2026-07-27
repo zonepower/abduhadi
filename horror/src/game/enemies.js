@@ -1,73 +1,12 @@
 import * as THREE from 'three';
+import { buildCharacter } from './characters.js';
 
 // ---------------------------------------------------------------------------
 // Actors: the player's daughter and the things that live in the house.
 // All bodies are built from boxes and animated procedurally.
 // ---------------------------------------------------------------------------
 
-function limb(w, h, d, material) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function buildBody(palette, scale = 1, gaunt = 1) {
-  const root = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.82 });
-  const cloth = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.95 });
-  skin.userData.reflectivity = 0.08;
-  cloth.userData.reflectivity = 0.03;
-
-  const hips = new THREE.Group();
-  hips.position.y = 0.92 * scale;
-  root.add(hips);
-
-  const torso = limb(0.46 * scale / gaunt, 0.68 * scale, 0.26 * scale / gaunt, cloth);
-  torso.position.y = 0.3 * scale;
-  hips.add(torso);
-
-  const neck = new THREE.Group();
-  neck.position.y = 0.66 * scale;
-  hips.add(neck);
-  const head = limb(0.24 * scale, 0.3 * scale, 0.24 * scale, skin);
-  head.position.y = 0.16 * scale;
-  neck.add(head);
-
-  const arms = [];
-  const legs = [];
-  [-1, 1].forEach((side) => {
-    const shoulder = new THREE.Group();
-    shoulder.position.set(side * 0.28 * scale / gaunt, 0.56 * scale, 0);
-    hips.add(shoulder);
-    const upper = limb(0.12 * scale, 0.36 * scale, 0.12 * scale, skin);
-    upper.position.y = -0.18 * scale;
-    shoulder.add(upper);
-    const elbow = new THREE.Group();
-    elbow.position.y = -0.36 * scale;
-    shoulder.add(elbow);
-    const lower = limb(0.1 * scale, 0.34 * scale, 0.1 * scale, skin);
-    lower.position.y = -0.17 * scale;
-    elbow.add(lower);
-    arms.push({ shoulder, elbow, side });
-
-    const hip = new THREE.Group();
-    hip.position.set(side * 0.14 * scale, 0, 0);
-    hips.add(hip);
-    const thigh = limb(0.15 * scale, 0.44 * scale, 0.15 * scale, cloth);
-    thigh.position.y = -0.22 * scale;
-    hip.add(thigh);
-    const knee = new THREE.Group();
-    knee.position.y = -0.44 * scale;
-    hip.add(knee);
-    const shin = limb(0.13 * scale, 0.42 * scale, 0.13 * scale, cloth);
-    shin.position.y = -0.21 * scale;
-    knee.add(shin);
-    legs.push({ hip, knee, side });
-  });
-
-  return { root, hips, neck, head, arms, legs, materials: { skin, cloth } };
-}
+// Bodies come from characters.js; Actor only drives them.
 
 export class Actor {
   constructor(level, position, opts = {}) {
@@ -90,9 +29,13 @@ export class Actor {
     this.stagger = 0;
     this.deadTimer = 0;
 
-    this.body = buildBody(opts.palette || { skin: 0x8f7f70, cloth: 0x2b2b31 }, opts.scale ?? 1, opts.gaunt ?? 1);
+    this.body = buildCharacter(opts.kind || 'karim');
+    this.body.materials.skinRef = this.body.materials.skin;
     this.mesh = this.body.root;
     this.mesh.position.copy(this.position);
+    this.blinkTimer = 1 + Math.random() * 4;
+    this.blink = 0;
+    this.jawOpen = 0;
   }
 
   addTo(scene) { scene.add(this.mesh); }
@@ -148,7 +91,32 @@ export class Actor {
     return this.distanceTo(target);
   }
 
+  /** Blinks, and lets the jaw hang open while something is being said. */
+  animateFace(dt) {
+    const face = this.body.face;
+    if (!face) return;
+    this.blinkTimer -= dt;
+    if (this.blinkTimer <= 0) {
+      this.blinkTimer = 2.2 + Math.random() * 4.5;
+      this.blink = 1;
+    }
+    this.blink = Math.max(0, this.blink - dt * 7);
+    if (face.lids) {
+      const closed = Math.sin(Math.min(1, this.blink) * Math.PI);
+      face.lids.forEach((lid) => { lid.position.y = lid.userData.rest ??= lid.position.y; });
+      face.lids.forEach((lid) => {
+        lid.scale.y = 0.6 + closed * 1.6;
+        lid.position.y = (lid.userData.rest || 0) * (1 - closed * 0.9);
+      });
+    }
+    if (face.jaw) {
+      face.jaw.rotation.x += (this.jawOpen * 0.42 - face.jaw.rotation.x) * Math.min(1, dt * 12);
+    }
+    this.jawOpen = Math.max(0, this.jawOpen - dt * 2.2);
+  }
+
   animate(dt, moving) {
+    this.animateFace(dt);
     this.animTime += dt * (moving ? 8 : 1.4);
     const swing = Math.sin(this.animTime) * (moving ? 0.9 : 0.09);
     const counter = Math.sin(this.animTime + Math.PI) * (moving ? 0.9 : 0.09);
@@ -158,6 +126,8 @@ export class Actor {
     this.body.legs[1].knee.rotation.x = Math.max(0, -counter) * 0.7;
     this.body.arms[0].shoulder.rotation.x = counter * 0.5 + this.armPose;
     this.body.arms[1].shoulder.rotation.x = swing * 0.5 + this.armPose;
+    this.body.arms[0].elbow.rotation.x = -Math.abs(counter) * 0.35 - 0.12;
+    this.body.arms[1].elbow.rotation.x = -Math.abs(swing) * 0.35 - 0.12;
     this.body.hips.position.y = this.hipHeight + Math.abs(Math.sin(this.animTime)) * (moving ? 0.05 : 0.01);
     this.body.neck.rotation.z = Math.sin(this.animTime * 0.4) * 0.06;
   }
@@ -204,12 +174,12 @@ export class Enemy extends Actor {
   constructor(level, position, type, audio) {
     const presets = {
       crawler: {
-        radius: 0.38, height: 1.6, speed: 3.35, health: 58, scale: 0.92, gaunt: 1.35,
-        palette: { skin: 0x9a8a7c, cloth: 0x23202a }, damage: 14, attackRate: 1.05, sight: 22,
+        radius: 0.38, height: 1.6, speed: 3.35, health: 58, kind: 'crawler',
+        damage: 14, attackRate: 1.05, sight: 22,
       },
       stalker: {
-        radius: 0.46, height: 2.1, speed: 2.5, health: 135, scale: 1.18, gaunt: 1.1,
-        palette: { skin: 0x6f5f56, cloth: 0x161820 }, damage: 26, attackRate: 1.6, sight: 26,
+        radius: 0.46, height: 2.1, speed: 2.5, health: 135, kind: 'stalker',
+        damage: 26, attackRate: 1.6, sight: 26,
       },
     };
     const preset = presets[type] || presets.crawler;
@@ -343,8 +313,7 @@ export class Enemy extends Actor {
 export class PlayerAvatar extends Actor {
   constructor(level, position) {
     super(level, position, {
-      radius: 0.4, height: 1.78, speed: 3, health: 9999, scale: 1.02,
-      palette: { skin: 0xb08a6a, cloth: 0x2f3742 },
+      radius: 0.4, height: 1.78, speed: 3, health: 9999, kind: 'karim',
     });
     this.mesh.visible = false;
     this.pose = 'stand';
@@ -413,13 +382,12 @@ export class PlayerAvatar extends Actor {
 export class Companion extends Actor {
   constructor(level, position) {
     super(level, position, {
-      radius: 0.3, height: 1.25, speed: 3.1, health: 9999, scale: 0.66,
-      palette: { skin: 0xd8b49a, cloth: 0x7a3550 },
+      radius: 0.3, height: 1.25, speed: 3.1, health: 9999, kind: 'layla',
     });
     this.followDistance = 2.4;
     this.mode = 'follow';
     this.scared = 0;
-    this.glow = new THREE.PointLight(0xffc9a8, 2.2, 5.5, 2);
+    this.glow = new THREE.PointLight(0xffc0a0, 4.5, 4.2, 1.7);
     this.glow.position.set(0, 1.1, 0);
     this.mesh.add(this.glow);
   }
@@ -449,7 +417,7 @@ export class Companion extends Actor {
     }
 
     this.scared = THREE.MathUtils.clamp(this.scared + ((threat ? 1 : -0.5) * dt), 0, 1);
-    this.glow.intensity = 1.4 + Math.sin(performance.now() * 0.004) * 0.3;
+    this.glow.intensity = 4.0 + Math.sin(performance.now() * 0.004) * 0.6;
     this.animate(dt, moving);
     if (this.scared > 0.3) {
       this.body.arms.forEach((a) => { a.shoulder.rotation.x = -1.1; a.elbow.rotation.x = -1.2; });

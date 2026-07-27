@@ -28,6 +28,8 @@ const MODULES = [
   'src/engine/cinema.js',
   'src/game/voicebank-data.js',
   'src/game/builder.js',
+  'src/game/characters.js',
+  'src/game/viewmodels.js',
   'src/game/environment.js',
   'src/game/levels.js',
   'src/game/player.js',
@@ -40,12 +42,35 @@ const MODULES = [
   'src/main.js',
 ];
 
-/** Strips module syntax so the file can be concatenated into one scope. */
+/**
+ * Rewrites one module so it can be concatenated without leaking or colliding.
+ *
+ * Each module body goes inside a bare block. `const`/`let`/`class` and (in
+ * strict mode) `function` are block scoped, so two modules may both declare a
+ * private helper called `box`. Exported bindings are hoisted to `var`s
+ * outside the block and assigned inside it, which is what keeps them visible
+ * to the modules that come after.
+ */
 function flatten(source) {
-  return source
-    .replace(/^import\b[^;]*;/gm, '')            // import ... from '...';
+  const exported = [];
+  const body = source
+    .replace(/^import\b[^;]*;/gm, '')              // import ... from '...';
     .replace(/^export\s*\{[^}]*\};?[ \t]*$/gm, '') // export { a, b };
-    .replace(/^export\s+(?=(?:const|let|var|function|class|async))/gm, '');
+    .replace(
+      /^export\s+(const|let|var|function|class|async\s+function)\s+([A-Za-z_$][\w$]*)/gm,
+      (_match, kind, name) => {
+        exported.push(name);
+        if (kind === 'function' || kind === 'class' || /^async/.test(kind)) {
+          // a declaration becomes an expression assigned to the outer binding
+          return `${name} = ${kind} ${name}`;
+        }
+        // `export const X` -> `X`; the source already supplies the `=`
+        return name;
+      }
+    );
+  const unique = [...new Set(exported)];
+  const hoist = unique.length ? `var ${unique.join(', ')};\n` : '';
+  return `${hoist}{\n${body}\n}\n`;
 }
 
 /** Turns three's single trailing `export { ... }` into a THREE namespace. */

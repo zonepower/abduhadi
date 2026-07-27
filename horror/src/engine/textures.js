@@ -149,8 +149,11 @@ function woodPlanks(size, tint) {
       const along = px / size;
       const seam = Math.min(y % plank, plank - (y % plank)) / plank;
       const boardSeam = Math.min((px % (plank * 2)), plank * 2 - (px % (plank * 2))) / (plank * 2);
-      // long grain stretched along the plank
-      const grain = fbm(along * 18 + row * 7.3, (y % plank) * 0.18 + row * 3.1, 5);
+      // Growth rings: a warped distance field makes the grain curve around
+      // the board the way sawn timber does, instead of running dead straight.
+      const warp = fbm(along * 3.2 + row * 5.1, (y % plank) * 0.05, 3) * 1.9;
+      const rings = Math.abs(Math.sin((along * 26 + warp * 6 + row * 2.1)));
+      const grain = rings * 0.62 + fbm(along * 18 + row * 7.3, (y % plank) * 0.18 + row * 3.1, 5) * 0.38;
       const knot = Math.max(0, 1 - Math.hypot(((px % (plank * 2)) - plank) / plank, ((y % plank) - plank * 0.5) / (plank * 0.5)) * 1.7);
       const wear = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
       let shade = 0.45 + grain * 0.32 + knot * 0.18;
@@ -162,9 +165,11 @@ function woodPlanks(size, tint) {
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = shade * 0.7 + (seam < 0.06 ? -0.5 : 0) + grain * 0.25;
-      // polished where worn down, rough where damp
-      rough[y * size + x] = 0.42 + (1 - wear) * 0.45 + grain * 0.1;
+      // the earlywood between rings sits slightly proud once a floor is old
+      height[y * size + x] = shade * 0.55 + (seam < 0.06 ? -0.6 : 0) + rings * 0.42;
+      // burnished along the walking line, dull and open-pored elsewhere
+      const traffic = Math.max(0, 1 - Math.abs((y % (plank * 4)) / (plank * 4) - 0.5) * 3.4);
+      rough[y * size + x] = 0.72 - traffic * 0.34 + (1 - wear) * 0.18 - rings * 0.06;
     }
   }
   ctx.putImageData(image, 0, 0);
@@ -189,16 +194,23 @@ function plaster(size, tint, damp) {
       // peeling patches: sharp threshold on a low-frequency field
       const peel = fbm(x * 0.009 - 80, y * 0.009 + 33, 4) * 0.5 + 0.5;
       const peeled = peel > 0.58 ? 1 : 0;
+      // Hairline cracks: the ridges of a warped noise field, thresholded thin.
+      // Real cracks are long and branching, which |noise| near zero gives you.
+      const crackField = Math.abs(fbm(x * 0.013 + 200, y * 0.013 - 90, 4));
+      const crack = crackField < 0.022 ? 1 - crackField / 0.022 : 0;
+      const branch = Math.abs(fbm(x * 0.031 - 15, y * 0.031 + 61, 3)) < 0.016 ? 0.55 : 0;
+      const cracked = Math.max(crack, branch * (peel > 0.45 ? 1 : 0));
       let shade = 0.55 + base * 0.3 + fine * 0.12;
       shade *= 1 - stain * damp * 0.75;
       if (peeled) shade *= 0.62;
+      shade *= 1 - cracked * 0.62;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.6 + fine * 0.25 - peeled * 0.35;
-      rough[y * size + x] = 0.72 + fine * 0.2 - stain * damp * 0.35;
+      height[y * size + x] = base * 0.6 + fine * 0.25 - peeled * 0.35 - cracked * 0.8;
+      rough[y * size + x] = 0.72 + fine * 0.2 - stain * damp * 0.35 + cracked * 0.2;
     }
   }
   ctx.putImageData(image, 0, 0);
@@ -225,15 +237,18 @@ function tiles(size, tint) {
       const variance = (Math.sin(id * 12.9898) * 43758.5453) % 1;
       const grime = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
       const crack = Math.abs(fbm(x * 0.05 + 9, y * 0.05 - 3, 3));
+      // bevel: the last few percent of each tile rolls off toward the grout
+      const bevel = Math.min(1, Math.max(0, (grout - 0.05) / 0.06));
       let shade = 0.68 + variance * 0.12 - grime * 0.28;
       if (crack < 0.02) shade *= 0.45;
       if (grout < 0.05) shade *= 0.32;
+      else shade *= 0.82 + bevel * 0.18;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = grout < 0.05 ? 0.1 : 0.75 + grime * 0.1;
+      height[y * size + x] = grout < 0.05 ? 0.05 : 0.42 + bevel * 0.42 + grime * 0.08;
       // glazed tiles stay smooth, grout lines are matte
       rough[y * size + x] = grout < 0.05 ? 0.85 : 0.18 + grime * 0.45;
     }
@@ -257,15 +272,21 @@ function concrete(size, tint) {
       const base = fbm(x * 0.02, y * 0.02, 6) * 0.5 + 0.5;
       const pits = Math.pow(Math.max(0, fbm(x * 0.16, y * 0.16, 2) * 0.5 + 0.5), 6);
       const wet = Math.pow(Math.max(0, fbm(x * 0.008 - 20, y * 0.008 + 60, 4) * 0.5 + 0.5), 1.6);
-      let shade = 0.42 + base * 0.26 - pits * 0.3;
+      // exposed aggregate: bright specks of stone in the cement
+      const stone = fbm(x * 0.28, y * 0.28, 2) * 0.5 + 0.5;
+      const aggregate = stone > 0.74 ? (stone - 0.74) * 3.2 : 0;
+      // horizontal lines where the shuttering boards met when it was poured
+      const shutter = Math.abs(((y % 96) / 96) - 0.5) > 0.482 ? 1 : 0;
+      let shade = 0.42 + base * 0.26 - pits * 0.3 + aggregate * 0.34;
       shade *= 1 - wet * 0.35;
+      shade *= 1 - shutter * 0.30;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.7 - pits * 0.6;
-      rough[y * size + x] = 0.86 - wet * 0.6 + pits * 0.1;
+      height[y * size + x] = base * 0.7 - pits * 0.6 + aggregate * 0.4 - shutter * 0.5;
+      rough[y * size + x] = 0.86 - wet * 0.6 + pits * 0.1 - aggregate * 0.25;
     }
   }
   ctx.putImageData(image, 0, 0);

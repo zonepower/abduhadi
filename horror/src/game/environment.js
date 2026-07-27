@@ -137,11 +137,11 @@ export class Environment {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const material = new THREE.PointsMaterial({
-      color: 0xd8cdb8,
-      size: 0.035,
+      color: 0xbfb49e,
+      size: 0.013,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.30,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });

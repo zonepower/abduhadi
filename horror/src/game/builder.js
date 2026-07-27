@@ -30,31 +30,38 @@ function mat(textures, key, opts = {}) {
   });
   if (material.normalMap) material.normalScale.set(opts.normalScale ?? 1, opts.normalScale ?? 1);
   material.userData.reflectivity = opts.reflectivity ?? 0;
+  // architecture takes only a hint of the probe; the ray-marched passes do the
+  // heavy lifting and doubling up would wash the levels out
+  material.envMapIntensity = opts.envMapIntensity ?? (material.metalness > 0.5 ? 1.8 : 0.5);
   return material;
 }
 
 export function createMaterials(textures) {
   return {
-    wood: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85 }),
+    wood: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85, normalScale: 1.4 }),
     carpet: mat(textures, 'darkWood', { color: 0x6b2f38, reflectivity: 0.04, roughness: 1 }),
-    tile: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45 }),
-    concrete: mat(textures, 'concrete', { reflectivity: 0.12, roughness: 0.95 }),
+    tile: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45, normalScale: 1.6 }),
+    concrete: mat(textures, 'concrete', { reflectivity: 0.12, roughness: 0.95, normalScale: 1.3 }),
     grass: mat(textures, 'concrete', { color: 0x33422a, reflectivity: 0.08, roughness: 1 }),
+    trim: mat(textures, 'darkWood', { color: 0x6b5744, reflectivity: 0.22, roughness: 0.62 }),
+    stoneTrim: mat(textures, 'wallStone', { color: 0xa39a8c, reflectivity: 0.12, roughness: 0.82 }),
     water: new THREE.MeshStandardMaterial({
       color: 0x25454f, roughness: 0.07, metalness: 0.2, transparent: true, opacity: 0.82,
     }),
-    wallPaper: mat(textures, 'wallPaper', { reflectivity: 0.06, roughness: 0.95 }),
-    wallStone: mat(textures, 'wallStone', { color: 0x8f8f96, reflectivity: 0.1, roughness: 0.9 }),
+    wallPaper: mat(textures, 'wallPaper', { reflectivity: 0.06, roughness: 0.95, normalScale: 1.5 }),
+    wallStone: mat(textures, 'wallStone', { color: 0x8f8f96, reflectivity: 0.1, roughness: 0.9, normalScale: 1.5 }),
     panel: mat(textures, 'darkWood', { reflectivity: 0.2, roughness: 0.75 }),
-    metal: mat(textures, 'metal', { reflectivity: 0.7, roughness: 0.4, metalness: 1 }),
-    mirror: new THREE.MeshStandardMaterial({ color: 0x9fb0c0, roughness: 0.02, metalness: 1 }),
+    metal: mat(textures, 'metal', { reflectivity: 0.7, roughness: 0.4, metalness: 1, envMapIntensity: 2.0 }),
+    mirror: new THREE.MeshStandardMaterial({
+      color: 0x9fb0c0, roughness: 0.02, metalness: 1, envMapIntensity: 2.2,
+    }),
     glass: new THREE.MeshStandardMaterial({
       color: 0x88aabb, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.35,
     }),
     cloth: new THREE.MeshStandardMaterial({ color: 0x2a2028, roughness: 1 }),
     flesh: new THREE.MeshStandardMaterial({ color: 0x6d2b2b, roughness: 0.75 }),
     bone: new THREE.MeshStandardMaterial({ color: 0xc9bfa4, roughness: 0.6 }),
-    gold: new THREE.MeshStandardMaterial({ color: 0xb08a3a, roughness: 0.28, metalness: 1 }),
+    gold: new THREE.MeshStandardMaterial({ color: 0xb08a3a, roughness: 0.28, metalness: 1, envMapIntensity: 2.0 }),
     blood: new THREE.MeshStandardMaterial({
       color: 0x4a0d0d, roughness: 0.25, metalness: 0, transparent: true, opacity: 0.92,
     }),
@@ -71,9 +78,10 @@ function group(...children) {
   return g;
 }
 
-function part(geometry, material, x = 0, y = 0, z = 0) {
+function part(geometry, material, x = 0, y = 0, z = 0, rot = null) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(x, y, z);
+  if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
@@ -457,24 +465,184 @@ export class Level {
       if (ceil) ceil.castShadow = false;
     }
 
-    // doors get their own swinging mesh
+    // Doors: a cased opening (jambs + lintel + threshold) with a panelled leaf
+    // hinged inside it, so a doorway reads as carpentry and not a hole.
+    const trim = m[def.trimMaterial || 'trim'] || m.trim;
+    const doorH = Math.min(this.wallHeight * 0.86, 2.35);
     this.doors.forEach((door) => {
-      const pivot = new THREE.Group();
       const p = this.toWorld(door.col, door.row);
       const horizontal = this.isSolid(door.col - 1, door.row) && this.isSolid(door.col + 1, door.row);
-      pivot.position.set(p.x, 0, p.z);
-      const leaf = part(box(TILE * 0.95, this.wallHeight * 0.92, 0.14), m.panel, TILE * 0.47, this.wallHeight * 0.46, 0);
-      const handle = part(new THREE.SphereGeometry(0.08, 8, 6), m.metal, TILE * 0.85, this.wallHeight * 0.45, 0.12);
-      pivot.add(leaf, handle);
-      if (!horizontal) pivot.rotation.y = Math.PI / 2;
-      pivot.position.x -= horizontal ? TILE * 0.5 : 0;
-      pivot.position.z -= horizontal ? 0 : TILE * 0.5;
+      const frame = new THREE.Group();
+      frame.position.set(p.x, 0, p.z);
+      if (!horizontal) frame.rotation.y = Math.PI / 2;
+
+      const jambT = 0.14;
+      const opening = TILE - jambT * 2;
+      // head casing above the opening, filling up to the ceiling
+      frame.add(part(box(TILE, this.wallHeight - doorH, 0.34), trim,
+        0, doorH + (this.wallHeight - doorH) / 2, 0));
+      frame.add(part(box(TILE * 1.02, 0.16, 0.40), trim, 0, doorH, 0));
+      // side jambs
+      [-1, 1].forEach((side) => {
+        frame.add(part(box(jambT, doorH, 0.34), trim, side * (TILE - jambT) / 2, doorH / 2, 0));
+      });
+      // threshold
+      frame.add(part(box(opening, 0.05, 0.30), trim, 0, 0.025, 0));
+      this.group.add(frame);
+
+      // the leaf swings from the hinge side of the opening
+      const pivot = new THREE.Group();
+      pivot.position.copy(frame.position);
+      pivot.rotation.y = frame.rotation.y;
+      pivot.translateX(-opening / 2);
+      const leafW = opening * 0.98;
+      const leaf = part(box(leafW, doorH * 0.985, 0.055), m.panel, leafW / 2, doorH / 2, 0);
+      pivot.add(leaf);
+      // two recessed panels and rails, the way a real door is built up
+      [0.30, 0.68].forEach((h) => {
+        pivot.add(part(box(leafW * 0.66, doorH * 0.26, 0.02), trim, leafW / 2, doorH * h, 0.038));
+      });
+      pivot.add(part(box(leafW, 0.09, 0.03), trim, leafW / 2, doorH * 0.49, 0.038));
+      // handle + escutcheon on the latch side
+      pivot.add(part(box(0.10, 0.16, 0.02), m.metal, leafW * 0.88, doorH * 0.46, 0.04));
+      pivot.add(part(new THREE.CylinderGeometry(0.022, 0.022, 0.09, 8), m.metal,
+        leafW * 0.88, doorH * 0.46, 0.085, [Math.PI / 2, 0, 0]));
+      pivot.add(part(new THREE.SphereGeometry(0.045, 10, 8), m.metal, leafW * 0.88, doorH * 0.46, 0.125));
+      // hinges
+      [0.18, 0.82].forEach((h) => {
+        pivot.add(part(box(0.04, 0.13, 0.05), m.metal, 0.02, doorH * h, 0.0));
+      });
+
       door.baseRotation = pivot.rotation.y;
       door.mesh = pivot;
       this.group.add(pivot);
     });
 
+    this.#buildTrim(trim);
+    this.#buildSconces();
+    this.#buildWindows();
+
     (def.props || []).forEach((spec) => this.placeProp(spec));
+  }
+
+  /** Every floor edge that meets a wall gets a skirting board and a cornice. */
+  #buildTrim(trimMaterial) {
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+    const edges = [];
+    this.floorKind.forEach((kind, key) => {
+      const [col, row] = key.split(',').map(Number);
+      DIRS.forEach(([dc, dr, yaw]) => {
+        if (this.isSolid(col + dc, row + dr)) edges.push([col, row, dc, dr, yaw]);
+      });
+    });
+    if (!edges.length) return;
+
+    const place = (geometry, height, material) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, edges.length);
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      const dummy = new THREE.Object3D();
+      edges.forEach(([col, row, dc, dr, yaw], i) => {
+        const p = this.toWorld(col, row);
+        dummy.position.set(p.x + dc * TILE * 0.47, height, p.z + dr * TILE * 0.47);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      this.group.add(mesh);
+    };
+
+    place(box(TILE, 0.17, 0.07), 0.085, trimMaterial);                      // skirting
+    if (this.def.ceiling !== false) {
+      place(box(TILE, 0.13, 0.13), this.wallHeight - 0.07, trimMaterial);   // cornice
+    }
+  }
+
+  /**
+   * Wall lights on a regular rhythm — placed against walls, never floating,
+   * and spaced so a corridor reads as lit at intervals rather than at random.
+   */
+  #buildSconces() {
+    if (this.def.sconces === false) return;
+    const m = this.materials;
+    const spacing = this.def.sconceSpacing ?? 5;
+    const tint = this.def.sconceColor ?? 0xffa851;
+    let placed = 0;
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+
+    this.floorKind.forEach((kind, key) => {
+      if (placed >= (this.def.sconceLimit ?? 26)) return;
+      const [col, row] = key.split(',').map(Number);
+      // deterministic rhythm rather than random scatter
+      if ((col * 3 + row * 5) % spacing !== 0) return;
+      const dir = DIRS.find(([dc, dr]) => this.isSolid(col + dc, row + dr));
+      if (!dir) return;
+      const [dc, dr, yaw] = dir;
+      const p = this.toWorld(col, row);
+      const node = new THREE.Group();
+      node.position.set(p.x + dc * TILE * 0.44, 0, p.z + dr * TILE * 0.44);
+      node.rotation.y = yaw;
+      const h = Math.min(2.15, this.wallHeight * 0.55);
+      node.add(part(box(0.16, 0.30, 0.05), m.metal, 0, h, 0));                 // back plate
+      node.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.22, 6), m.metal, 0, h + 0.02, 0.11, [Math.PI / 2.6, 0, 0]));
+      node.add(part(new THREE.CylinderGeometry(0.075, 0.045, 0.16, 8, 1, true), m.metal, 0, h + 0.16, 0.20));
+      const wax = new THREE.MeshStandardMaterial({ color: 0xe6d9bd, roughness: 0.85 });
+      node.add(part(new THREE.CylinderGeometry(0.028, 0.032, 0.14, 8), wax, 0, h + 0.26, 0.20));
+      const light = new THREE.PointLight(tint, 13, 8.5, 1.6);
+      light.position.set(0, h + 0.36, 0.22);
+      node.add(light);
+      node.userData.light = light;
+      node.userData.flicker = true;
+      this.group.add(node);
+      this.props.push(node);
+      this.lights.push(light);
+      placed += 1;
+    });
+  }
+
+  /** Windows punched into the walls that face outside, with night behind them. */
+  #buildWindows() {
+    if (this.def.windows === false) return;
+    const m = this.materials;
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+    const night = new THREE.MeshStandardMaterial({
+      color: 0x0b1220, emissive: 0x25406e, emissiveIntensity: 0.85, roughness: 0.25, metalness: 0.1,
+    });
+    night.userData.reflectivity = 0.35;
+    let placed = 0;
+
+    this.floorKind.forEach((kind, key) => {
+      if (placed >= (this.def.windowLimit ?? 14)) return;
+      const [col, row] = key.split(',').map(Number);
+      if ((col * 7 + row * 11) % 6 !== 0) return;
+      const dir = DIRS.find(([dc, dr]) => {
+        // the wall must be solid AND have open void directly behind it
+        if (!this.isSolid(col + dc, row + dr)) return false;
+        return this.charAt(col + dc * 2, row + dr * 2) === ' ';
+      });
+      if (!dir) return;
+      const [dc, dr, yaw] = dir;
+      const p = this.toWorld(col, row);
+      const node = new THREE.Group();
+      node.position.set(p.x + dc * TILE * 0.49, 0, p.z + dr * TILE * 0.49);
+      node.rotation.y = yaw;
+      const sill = Math.min(1.05, this.wallHeight * 0.28);
+      const h = Math.min(1.35, this.wallHeight * 0.42);
+      const w = TILE * 0.62;
+      node.add(part(box(w, h, 0.05), night, 0, sill + h / 2, 0.03));           // the night outside
+      node.add(part(box(w, h, 0.03), m.glass, 0, sill + h / 2, 0.06));
+      // casing, mullion and sill
+      node.add(part(box(w + 0.18, 0.10, 0.14), m.trim, 0, sill + h + 0.05, 0.07));
+      node.add(part(box(w + 0.18, 0.12, 0.22), m.trim, 0, sill - 0.05, 0.09));
+      [-1, 1].forEach((side) => {
+        node.add(part(box(0.09, h + 0.1, 0.14), m.trim, side * (w / 2 + 0.045), sill + h / 2, 0.07));
+      });
+      node.add(part(box(0.05, h, 0.10), m.trim, 0, sill + h / 2, 0.08));
+      node.add(part(box(w, 0.05, 0.10), m.trim, 0, sill + h * 0.5, 0.08));
+      this.group.add(node);
+      placed += 1;
+    });
   }
 
   placeProp(spec) {

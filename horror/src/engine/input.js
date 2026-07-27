@@ -33,12 +33,13 @@ export class Input {
     };
     this._onKeyUp = (e) => { this.keys.delete(e.code); };
     this._onMouseMove = (e) => {
-      if (this.locked) {
-        if (!this.enabled) return;
-        this.mouse.dx += e.movementX || 0;
-        this.mouse.dy += e.movementY || 0;
-        return;
-      }
+      if (!this.enabled) return;
+      // movementX/Y is reported with or without pointer lock, so raw mouse
+      // motion always steers 1:1 — the only thing lock adds is an infinite
+      // desk, which the edge assist below stands in for.
+      this.mouse.dx += e.movementX || 0;
+      this.mouse.dy += e.movementY || 0;
+      if (this.locked) return;
       const rect = this.canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       this.edgeLook.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -109,37 +110,60 @@ export class Input {
   /** True only on the frame the key went down. */
   tapped(code) { return this.pressed.has(code); }
 
+  /** Arrow keys move when the mouse is captured, and steer when it isn't. */
+  get arrowsSteer() {
+    return !this.locked && this.lockUnavailable;
+  }
+
   axis() {
     let x = 0;
     let z = 0;
-    if (this.down('KeyW') || this.down('ArrowUp')) z -= 1;
-    if (this.down('KeyS') || this.down('ArrowDown')) z += 1;
-    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
-    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    const arrows = !this.arrowsSteer;
+    if (this.down('KeyW') || (arrows && this.down('ArrowUp'))) z -= 1;
+    if (this.down('KeyS') || (arrows && this.down('ArrowDown'))) z += 1;
+    if (this.down('KeyA') || (arrows && this.down('ArrowLeft'))) x -= 1;
+    if (this.down('KeyD') || (arrows && this.down('ArrowRight'))) x += 1;
     const len = Math.hypot(x, z);
     if (len > 1) { x /= len; z /= len; }
     return { x, z };
   }
 
-  consumeLook() {
-    if (!this.locked && this.lockUnavailable && this.edgeLook.active) {
-      const rate = (value, scale) => {
-        const dead = 0.16;
-        const magnitude = Math.abs(value);
-        if (magnitude < dead) return 0;
-        const t = (magnitude - dead) / (1 - dead);
-        return Math.sign(value) * t * t * scale * this.sensitivity;
-      };
-      return {
-        dx: rate(this.edgeLook.x, 0.055),
-        dy: rate(this.edgeLook.y, 0.032) * (this.invertY ? -1 : 1),
-      };
-    }
-    const dx = this.mouse.dx * 0.0022 * this.sensitivity;
-    const dy = this.mouse.dy * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+  /**
+   * @param {number} dt seconds since the last frame — the edge assist and the
+   *   keyboard turn are rates, so they must not depend on frame rate.
+   */
+  consumeLook(dt = 1 / 60) {
+    const gain = 0.0034 * this.sensitivity;
+    let dx = this.mouse.dx * gain;
+    let dy = this.mouse.dy * gain;
     this.mouse.dx = 0;
     this.mouse.dy = 0;
-    return { dx, dy };
+
+    if (!this.locked) {
+      // Push toward a screen edge to keep turning past where the desk ends.
+      // Linear past a small dead zone, in radians per second.
+      if (this.edgeLook.active) {
+        const assist = (value, radPerSec) => {
+          const dead = 0.55;
+          const magnitude = Math.abs(value);
+          if (magnitude < dead) return 0;
+          const t = Math.min(1, (magnitude - dead) / (1 - dead));
+          return Math.sign(value) * t * radPerSec * dt * this.sensitivity;
+        };
+        dx += assist(this.edgeLook.x, 2.2);
+        dy += assist(this.edgeLook.y, 1.3);
+      }
+      // and the keyboard is always there as an exact fallback
+      if (this.arrowsSteer) {
+        const turn = 1.9 * dt * this.sensitivity;
+        if (this.down('ArrowLeft')) dx -= turn;
+        if (this.down('ArrowRight')) dx += turn;
+        if (this.down('ArrowUp')) dy -= turn * 0.7;
+        if (this.down('ArrowDown')) dy += turn * 0.7;
+      }
+    }
+
+    return { dx, dy: dy * (this.invertY ? -1 : 1) };
   }
 
   endFrame() {

@@ -15,9 +15,7 @@ export class Boss extends Actor {
       height: 2.6,
       speed: 2.9,
       health: 900,
-      scale: 1.45,
-      gaunt: 0.85,
-      palette: { skin: 0x74616a, cloth: 0x120d14 },
+      kind: 'shepherd',
     });
 
     this.audio = audio;
@@ -32,28 +30,20 @@ export class Boss extends Actor {
     this.laughTimer = 6;
     this.damageMul = 1;
 
-    const maskMat = new THREE.MeshStandardMaterial({ color: 0xd9cdb4, roughness: 0.55 });
-    maskMat.userData.reflectivity = 0.2;
-    const mask = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.36, 0.06), maskMat);
-    mask.position.set(0, 0.24, 0.19);
-    mask.castShadow = true;
-    this.body.neck.add(mask);
-
-    const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0x000000, emissive: 0xff2a1a, emissiveIntensity: 3, roughness: 1,
-    });
-    [-0.08, 0.08].forEach((x) => {
-      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.03), eyeMat);
-      eye.position.set(x, 0.3, 0.23);
-      this.body.neck.add(eye);
-    });
-    this.eyeMat = eyeMat;
+    // the leather mask and burning eyes are part of the shepherd rig
+    this.eyeMat = this.body.face.eyeGlow || new THREE.MeshStandardMaterial();
 
     const coatMat = new THREE.MeshStandardMaterial({ color: 0x0d0a10, roughness: 1 });
-    const coat = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.5, 0.5), coatMat);
-    coat.position.set(0, -0.2, 0);
+    const coat = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.75, 0.62), coatMat);
+    coat.position.set(0, -0.55, 0);
     coat.castShadow = true;
     this.body.hips.add(coat);
+    // a hood collar that hides where the mask meets the head
+    const hood = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 10), coatMat);
+    hood.position.set(0, 0.05, -0.06);
+    hood.scale.set(1.15, 0.9, 1.15);
+    hood.castShadow = true;
+    this.body.neck.add(hood);
 
     const steel = new THREE.MeshStandardMaterial({ color: 0x585c63, roughness: 0.3, metalness: 1 });
     steel.userData.reflectivity = 0.65;
@@ -63,7 +53,7 @@ export class Boss extends Actor {
     hook.castShadow = true;
     this.body.arms[1].elbow.add(hook);
 
-    this.aura = new THREE.PointLight(0xff3018, 6, 12, 2);
+    this.aura = new THREE.PointLight(0xff3018, 2.6, 5.5, 2);
     this.aura.position.set(0, 1.6, 0);
     this.mesh.add(this.aura);
   }
@@ -90,7 +80,7 @@ export class Boss extends Actor {
     this.invuln = true;
     this.speed = phase === 3 ? 4.4 : phase === 2 ? 3.4 : 2.9;
     this.damageMul = phase === 3 ? 1.5 : phase === 2 ? 1.2 : 1;
-    this.aura.intensity = 6 + phase * 4;
+    this.aura.intensity = 2.6 + phase * 1.1;
     this.eyeMat.emissiveIntensity = 3 + phase * 2;
     this.audio?.stinger('rage');
     if (this.onPhase) this.onPhase(phase);
@@ -265,7 +255,7 @@ export class Boss extends Actor {
       }
     }
 
-    this.aura.intensity = (6 + this.phase * 4) * (0.8 + Math.sin(performance.now() * 0.006) * 0.2);
+    this.aura.intensity = (2.6 + this.phase * 1.1) * (0.8 + Math.sin(performance.now() * 0.006) * 0.2);
     this.syncMesh();
   }
 

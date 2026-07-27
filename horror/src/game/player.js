@@ -110,7 +110,7 @@ export class Player {
   }
 
   update(dt, input, level, opts = {}) {
-    const look = input.consumeLook();
+    const look = input.consumeLook(dt);
     this.yaw -= look.dx;
     this.pitch = Math.max(-1.35, Math.min(1.35, this.pitch - look.dy));
 

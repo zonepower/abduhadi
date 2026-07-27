@@ -134,6 +134,11 @@ export class RTRenderer {
     this.volLights = [];
     this.flashlight = null;
 
+    // Narrower lens for held weapons: less edge distortion than the 74° world
+    // camera, and a tiny depth range so nothing can intersect the level.
+    this.viewModelCamera = new THREE.PerspectiveCamera(62, 1, 0.008, 6);
+    this.viewModelCamera.layers.set(1);
+
     this.#buildTargets(window.innerWidth, window.innerHeight);
     this.#buildPasses();
   }
@@ -313,6 +318,54 @@ export class RTRenderer {
     }));
   }
 
+  /**
+   * Bakes a small irradiance/specular probe from a sky gradient.
+   *
+   * Without this every `metalness: 1` surface renders black: a metal has no
+   * diffuse term, so with nothing to reflect there is nothing to see. One
+   * cheap probe per chapter gives every gun, hinge and hook something to
+   * catch, and gives the whole level a little indirect bounce.
+   */
+  buildEnvironment(topColor, bottomColor, horizonColor) {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+    const material = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(topColor) },
+        uBottom: { value: new THREE.Color(bottomColor) },
+        uHorizon: { value: new THREE.Color(horizonColor ?? topColor) },
+      },
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uTop; uniform vec3 uBottom; uniform vec3 uHorizon;
+        varying vec3 vDir;
+        void main() {
+          float h = vDir.y * 0.5 + 0.5;
+          vec3 c = mix(uBottom, uHorizon, smoothstep(0.0, 0.5, h));
+          c = mix(c, uTop, smoothstep(0.45, 1.0, h));
+          gl_FragColor = vec4(c, 1.0);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(10, 16, 12), material);
+    envScene.add(mesh);
+    const target = pmrem.fromScene(envScene, 0.06);
+    pmrem.dispose();
+    mesh.geometry.dispose();
+    material.dispose();
+    if (this.envRT) this.envRT.dispose();
+    this.envRT = target;
+    return target.texture;
+  }
+
   setQuality(name) {
     if (!QUALITY_PRESETS[name]) return;
     this.presetName = name;
@@ -388,6 +441,19 @@ export class RTRenderer {
     this.renderer.clear();
     this.renderer.render(scene, camera);
 
+    // 1b. view-model pass: same eye, different lens, fresh depth
+    const vm = this.viewModelCamera;
+    vm.position.copy(camera.position);
+    vm.quaternion.copy(camera.quaternion);
+    if (vm.aspect !== camera.aspect) {
+      vm.aspect = camera.aspect;
+      vm.updateProjectionMatrix();
+    }
+    this.renderer.autoClear = false;
+    this.renderer.clearDepth();
+    this.renderer.render(scene, vm);
+    this.renderer.autoClear = true;
+
     // 2. G-buffer (view normals + reflectivity mask) --------------------------
     this.#renderGBuffer(scene, camera);
 
@@ -435,7 +501,7 @@ export class RTRenderer {
       cu.uLightPos.value[count].set(tmp.x, tmp.y, tmp.z, light.distance || 12);
       cu.uLightColor.value[count].set(
         light.color.r, light.color.g, light.color.b,
-        Math.min(light.intensity * 0.006, 0.08)
+        Math.min(light.intensity * 0.0022, 0.028)
       );
       count += 1;
     }

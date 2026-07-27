@@ -53672,6 +53672,8 @@ const THREE = { ACESFilmicToneMapping, AddEquation, AddOperation, AdditiveAnimat
 (function (THREE) {
 
 /* ===== src/engine/textures.js ===== */
+var noise2D, fbm, buildTextureLibrary;
+{
 
 
 // ---------------------------------------------------------------------------
@@ -53707,7 +53709,7 @@ function grad(hash, x, y) {
 }
 
 // Tiling value/perlin hybrid. `period` keeps the result seamless.
-function noise2D(x, y, period = 256) {
+noise2D = function noise2D(x, y, period = 256) {
   const wrap = (v) => ((v % period) + period) % period;
   const xi = Math.floor(x);
   const yi = Math.floor(y);
@@ -53730,7 +53732,7 @@ function noise2D(x, y, period = 256) {
   );
 }
 
-function fbm(x, y, octaves = 5, period = 256) {
+fbm = function fbm(x, y, octaves = 5, period = 256) {
   let amp = 0.5;
   let freq = 1;
   let sum = 0;
@@ -53823,8 +53825,11 @@ function woodPlanks(size, tint) {
       const along = px / size;
       const seam = Math.min(y % plank, plank - (y % plank)) / plank;
       const boardSeam = Math.min((px % (plank * 2)), plank * 2 - (px % (plank * 2))) / (plank * 2);
-      // long grain stretched along the plank
-      const grain = fbm(along * 18 + row * 7.3, (y % plank) * 0.18 + row * 3.1, 5);
+      // Growth rings: a warped distance field makes the grain curve around
+      // the board the way sawn timber does, instead of running dead straight.
+      const warp = fbm(along * 3.2 + row * 5.1, (y % plank) * 0.05, 3) * 1.9;
+      const rings = Math.abs(Math.sin((along * 26 + warp * 6 + row * 2.1)));
+      const grain = rings * 0.62 + fbm(along * 18 + row * 7.3, (y % plank) * 0.18 + row * 3.1, 5) * 0.38;
       const knot = Math.max(0, 1 - Math.hypot(((px % (plank * 2)) - plank) / plank, ((y % plank) - plank * 0.5) / (plank * 0.5)) * 1.7);
       const wear = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
       let shade = 0.45 + grain * 0.32 + knot * 0.18;
@@ -53836,9 +53841,11 @@ function woodPlanks(size, tint) {
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = shade * 0.7 + (seam < 0.06 ? -0.5 : 0) + grain * 0.25;
-      // polished where worn down, rough where damp
-      rough[y * size + x] = 0.42 + (1 - wear) * 0.45 + grain * 0.1;
+      // the earlywood between rings sits slightly proud once a floor is old
+      height[y * size + x] = shade * 0.55 + (seam < 0.06 ? -0.6 : 0) + rings * 0.42;
+      // burnished along the walking line, dull and open-pored elsewhere
+      const traffic = Math.max(0, 1 - Math.abs((y % (plank * 4)) / (plank * 4) - 0.5) * 3.4);
+      rough[y * size + x] = 0.72 - traffic * 0.34 + (1 - wear) * 0.18 - rings * 0.06;
     }
   }
   ctx.putImageData(image, 0, 0);
@@ -53863,16 +53870,23 @@ function plaster(size, tint, damp) {
       // peeling patches: sharp threshold on a low-frequency field
       const peel = fbm(x * 0.009 - 80, y * 0.009 + 33, 4) * 0.5 + 0.5;
       const peeled = peel > 0.58 ? 1 : 0;
+      // Hairline cracks: the ridges of a warped noise field, thresholded thin.
+      // Real cracks are long and branching, which |noise| near zero gives you.
+      const crackField = Math.abs(fbm(x * 0.013 + 200, y * 0.013 - 90, 4));
+      const crack = crackField < 0.022 ? 1 - crackField / 0.022 : 0;
+      const branch = Math.abs(fbm(x * 0.031 - 15, y * 0.031 + 61, 3)) < 0.016 ? 0.55 : 0;
+      const cracked = Math.max(crack, branch * (peel > 0.45 ? 1 : 0));
       let shade = 0.55 + base * 0.3 + fine * 0.12;
       shade *= 1 - stain * damp * 0.75;
       if (peeled) shade *= 0.62;
+      shade *= 1 - cracked * 0.62;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.6 + fine * 0.25 - peeled * 0.35;
-      rough[y * size + x] = 0.72 + fine * 0.2 - stain * damp * 0.35;
+      height[y * size + x] = base * 0.6 + fine * 0.25 - peeled * 0.35 - cracked * 0.8;
+      rough[y * size + x] = 0.72 + fine * 0.2 - stain * damp * 0.35 + cracked * 0.2;
     }
   }
   ctx.putImageData(image, 0, 0);
@@ -53899,15 +53913,18 @@ function tiles(size, tint) {
       const variance = (Math.sin(id * 12.9898) * 43758.5453) % 1;
       const grime = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
       const crack = Math.abs(fbm(x * 0.05 + 9, y * 0.05 - 3, 3));
+      // bevel: the last few percent of each tile rolls off toward the grout
+      const bevel = Math.min(1, Math.max(0, (grout - 0.05) / 0.06));
       let shade = 0.68 + variance * 0.12 - grime * 0.28;
       if (crack < 0.02) shade *= 0.45;
       if (grout < 0.05) shade *= 0.32;
+      else shade *= 0.82 + bevel * 0.18;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = grout < 0.05 ? 0.1 : 0.75 + grime * 0.1;
+      height[y * size + x] = grout < 0.05 ? 0.05 : 0.42 + bevel * 0.42 + grime * 0.08;
       // glazed tiles stay smooth, grout lines are matte
       rough[y * size + x] = grout < 0.05 ? 0.85 : 0.18 + grime * 0.45;
     }
@@ -53931,15 +53948,21 @@ function concrete(size, tint) {
       const base = fbm(x * 0.02, y * 0.02, 6) * 0.5 + 0.5;
       const pits = Math.pow(Math.max(0, fbm(x * 0.16, y * 0.16, 2) * 0.5 + 0.5), 6);
       const wet = Math.pow(Math.max(0, fbm(x * 0.008 - 20, y * 0.008 + 60, 4) * 0.5 + 0.5), 1.6);
-      let shade = 0.42 + base * 0.26 - pits * 0.3;
+      // exposed aggregate: bright specks of stone in the cement
+      const stone = fbm(x * 0.28, y * 0.28, 2) * 0.5 + 0.5;
+      const aggregate = stone > 0.74 ? (stone - 0.74) * 3.2 : 0;
+      // horizontal lines where the shuttering boards met when it was poured
+      const shutter = Math.abs(((y % 96) / 96) - 0.5) > 0.482 ? 1 : 0;
+      let shade = 0.42 + base * 0.26 - pits * 0.3 + aggregate * 0.34;
       shade *= 1 - wet * 0.35;
+      shade *= 1 - shutter * 0.30;
       const idx = (y * size + x) * 4;
       image.data[idx] = Math.min(255, shade * tint[0] * 255);
       image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
       image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
       image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.7 - pits * 0.6;
-      rough[y * size + x] = 0.86 - wet * 0.6 + pits * 0.1;
+      height[y * size + x] = base * 0.7 - pits * 0.6 + aggregate * 0.4 - shutter * 0.5;
+      rough[y * size + x] = 0.86 - wet * 0.6 + pits * 0.1 - aggregate * 0.25;
     }
   }
   ctx.putImageData(image, 0, 0);
@@ -54010,7 +54033,7 @@ function blueNoise(size) {
 
 let cache = null;
 
-function buildTextureLibrary() {
+buildTextureLibrary = function buildTextureLibrary() {
   if (cache) return cache;
   cache = {
     woodFloor: woodPlanks(512, [0.62, 0.44, 0.3]),
@@ -54026,8 +54049,12 @@ function buildTextureLibrary() {
   return cache;
 }
 
+}
+
 
 /* ===== src/engine/shaders.js ===== */
+var FULLSCREEN_VERT, GBUFFER_VERT, GBUFFER_FRAG, COMPOSITE_FRAG, TEMPORAL_FRAG, BRIGHT_FRAG, BLUR_FRAG, FINAL_FRAG;
+{
 // ---------------------------------------------------------------------------
 // GLSL for the "ray traced look" pipeline.
 //
@@ -54039,7 +54066,7 @@ function buildTextureLibrary() {
 //   * denoise          -> temporal reprojection-free accumulation
 // ---------------------------------------------------------------------------
 
-const FULLSCREEN_VERT = /* glsl */`
+FULLSCREEN_VERT = /* glsl */`
 varying vec2 vUv;
 void main() {
   vUv = uv;
@@ -54050,7 +54077,7 @@ void main() {
 // --- G-buffer ---------------------------------------------------------------
 // rgb = view space normal (encoded), a = reflectivity mask used by the SSR pass.
 
-const GBUFFER_VERT = /* glsl */`
+GBUFFER_VERT = /* glsl */`
 varying vec3 vViewNormal;
 void main() {
   vViewNormal = normalize(normalMatrix * normal);
@@ -54058,7 +54085,7 @@ void main() {
 }
 `;
 
-const GBUFFER_FRAG = /* glsl */`
+GBUFFER_FRAG = /* glsl */`
 uniform float uReflectivity;
 varying vec3 vViewNormal;
 void main() {
@@ -54068,7 +54095,7 @@ void main() {
 
 // --- main composite ---------------------------------------------------------
 
-const COMPOSITE_FRAG = /* glsl */`
+COMPOSITE_FRAG = /* glsl */`
 precision highp float;
 
 varying vec2 vUv;
@@ -54303,7 +54330,7 @@ void main() {
 
 // --- temporal accumulation --------------------------------------------------
 
-const TEMPORAL_FRAG = /* glsl */`
+TEMPORAL_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D tCurrent;
@@ -54331,7 +54358,7 @@ void main() {
 
 // --- bloom ------------------------------------------------------------------
 
-const BRIGHT_FRAG = /* glsl */`
+BRIGHT_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D tDiffuse;
@@ -54344,7 +54371,7 @@ void main() {
 }
 `;
 
-const BLUR_FRAG = /* glsl */`
+BLUR_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D tDiffuse;
@@ -54361,7 +54388,7 @@ void main() {
 
 // --- final grade ------------------------------------------------------------
 
-const FINAL_FRAG = /* glsl */`
+FINAL_FRAG = /* glsl */`
 precision highp float;
 varying vec2 vUv;
 
@@ -54451,12 +54478,16 @@ void main() {
 }
 `;
 
+}
+
 
 /* ===== src/engine/renderer.js ===== */
+var QUALITY_PRESETS, RTRenderer;
+{
 
 
 
-const QUALITY_PRESETS = {
+QUALITY_PRESETS = {
   ultra: {
     label: 'RT فائق',
     scale: 1.0,
@@ -54533,7 +54564,7 @@ class Pass {
   }
 }
 
-class RTRenderer {
+RTRenderer = class RTRenderer {
   constructor(canvas, textures) {
     this.textures = textures;
     this.renderer = new THREE.WebGLRenderer({
@@ -54579,6 +54610,11 @@ class RTRenderer {
 
     this.volLights = [];
     this.flashlight = null;
+
+    // Narrower lens for held weapons: less edge distortion than the 74° world
+    // camera, and a tiny depth range so nothing can intersect the level.
+    this.viewModelCamera = new THREE.PerspectiveCamera(62, 1, 0.008, 6);
+    this.viewModelCamera.layers.set(1);
 
     this.#buildTargets(window.innerWidth, window.innerHeight);
     this.#buildPasses();
@@ -54759,6 +54795,54 @@ class RTRenderer {
     }));
   }
 
+  /**
+   * Bakes a small irradiance/specular probe from a sky gradient.
+   *
+   * Without this every `metalness: 1` surface renders black: a metal has no
+   * diffuse term, so with nothing to reflect there is nothing to see. One
+   * cheap probe per chapter gives every gun, hinge and hook something to
+   * catch, and gives the whole level a little indirect bounce.
+   */
+  buildEnvironment(topColor, bottomColor, horizonColor) {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const envScene = new THREE.Scene();
+    const material = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(topColor) },
+        uBottom: { value: new THREE.Color(bottomColor) },
+        uHorizon: { value: new THREE.Color(horizonColor ?? topColor) },
+      },
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uTop; uniform vec3 uBottom; uniform vec3 uHorizon;
+        varying vec3 vDir;
+        void main() {
+          float h = vDir.y * 0.5 + 0.5;
+          vec3 c = mix(uBottom, uHorizon, smoothstep(0.0, 0.5, h));
+          c = mix(c, uTop, smoothstep(0.45, 1.0, h));
+          gl_FragColor = vec4(c, 1.0);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(10, 16, 12), material);
+    envScene.add(mesh);
+    const target = pmrem.fromScene(envScene, 0.06);
+    pmrem.dispose();
+    mesh.geometry.dispose();
+    material.dispose();
+    if (this.envRT) this.envRT.dispose();
+    this.envRT = target;
+    return target.texture;
+  }
+
   setQuality(name) {
     if (!QUALITY_PRESETS[name]) return;
     this.presetName = name;
@@ -54834,6 +54918,19 @@ class RTRenderer {
     this.renderer.clear();
     this.renderer.render(scene, camera);
 
+    // 1b. view-model pass: same eye, different lens, fresh depth
+    const vm = this.viewModelCamera;
+    vm.position.copy(camera.position);
+    vm.quaternion.copy(camera.quaternion);
+    if (vm.aspect !== camera.aspect) {
+      vm.aspect = camera.aspect;
+      vm.updateProjectionMatrix();
+    }
+    this.renderer.autoClear = false;
+    this.renderer.clearDepth();
+    this.renderer.render(scene, vm);
+    this.renderer.autoClear = true;
+
     // 2. G-buffer (view normals + reflectivity mask) --------------------------
     this.#renderGBuffer(scene, camera);
 
@@ -54881,7 +54978,7 @@ class RTRenderer {
       cu.uLightPos.value[count].set(tmp.x, tmp.y, tmp.z, light.distance || 12);
       cu.uLightColor.value[count].set(
         light.color.r, light.color.g, light.color.b,
-        Math.min(light.intensity * 0.006, 0.08)
+        Math.min(light.intensity * 0.0022, 0.028)
       );
       count += 1;
     }
@@ -54957,13 +55054,17 @@ class RTRenderer {
   }
 }
 
+}
+
 
 /* ===== src/engine/input.js ===== */
+var Input;
+{
 // ---------------------------------------------------------------------------
 // Pointer-lock FPS input.
 // ---------------------------------------------------------------------------
 
-class Input {
+Input = class Input {
   constructor(canvas) {
     this.canvas = canvas;
     this.keys = new Set();
@@ -54994,12 +55095,13 @@ class Input {
     };
     this._onKeyUp = (e) => { this.keys.delete(e.code); };
     this._onMouseMove = (e) => {
-      if (this.locked) {
-        if (!this.enabled) return;
-        this.mouse.dx += e.movementX || 0;
-        this.mouse.dy += e.movementY || 0;
-        return;
-      }
+      if (!this.enabled) return;
+      // movementX/Y is reported with or without pointer lock, so raw mouse
+      // motion always steers 1:1 — the only thing lock adds is an infinite
+      // desk, which the edge assist below stands in for.
+      this.mouse.dx += e.movementX || 0;
+      this.mouse.dy += e.movementY || 0;
+      if (this.locked) return;
       const rect = this.canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       this.edgeLook.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -55070,37 +55172,60 @@ class Input {
   /** True only on the frame the key went down. */
   tapped(code) { return this.pressed.has(code); }
 
+  /** Arrow keys move when the mouse is captured, and steer when it isn't. */
+  get arrowsSteer() {
+    return !this.locked && this.lockUnavailable;
+  }
+
   axis() {
     let x = 0;
     let z = 0;
-    if (this.down('KeyW') || this.down('ArrowUp')) z -= 1;
-    if (this.down('KeyS') || this.down('ArrowDown')) z += 1;
-    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
-    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    const arrows = !this.arrowsSteer;
+    if (this.down('KeyW') || (arrows && this.down('ArrowUp'))) z -= 1;
+    if (this.down('KeyS') || (arrows && this.down('ArrowDown'))) z += 1;
+    if (this.down('KeyA') || (arrows && this.down('ArrowLeft'))) x -= 1;
+    if (this.down('KeyD') || (arrows && this.down('ArrowRight'))) x += 1;
     const len = Math.hypot(x, z);
     if (len > 1) { x /= len; z /= len; }
     return { x, z };
   }
 
-  consumeLook() {
-    if (!this.locked && this.lockUnavailable && this.edgeLook.active) {
-      const rate = (value, scale) => {
-        const dead = 0.16;
-        const magnitude = Math.abs(value);
-        if (magnitude < dead) return 0;
-        const t = (magnitude - dead) / (1 - dead);
-        return Math.sign(value) * t * t * scale * this.sensitivity;
-      };
-      return {
-        dx: rate(this.edgeLook.x, 0.055),
-        dy: rate(this.edgeLook.y, 0.032) * (this.invertY ? -1 : 1),
-      };
-    }
-    const dx = this.mouse.dx * 0.0022 * this.sensitivity;
-    const dy = this.mouse.dy * 0.0022 * this.sensitivity * (this.invertY ? -1 : 1);
+  /**
+   * @param {number} dt seconds since the last frame — the edge assist and the
+   *   keyboard turn are rates, so they must not depend on frame rate.
+   */
+  consumeLook(dt = 1 / 60) {
+    const gain = 0.0034 * this.sensitivity;
+    let dx = this.mouse.dx * gain;
+    let dy = this.mouse.dy * gain;
     this.mouse.dx = 0;
     this.mouse.dy = 0;
-    return { dx, dy };
+
+    if (!this.locked) {
+      // Push toward a screen edge to keep turning past where the desk ends.
+      // Linear past a small dead zone, in radians per second.
+      if (this.edgeLook.active) {
+        const assist = (value, radPerSec) => {
+          const dead = 0.55;
+          const magnitude = Math.abs(value);
+          if (magnitude < dead) return 0;
+          const t = Math.min(1, (magnitude - dead) / (1 - dead));
+          return Math.sign(value) * t * radPerSec * dt * this.sensitivity;
+        };
+        dx += assist(this.edgeLook.x, 2.2);
+        dy += assist(this.edgeLook.y, 1.3);
+      }
+      // and the keyboard is always there as an exact fallback
+      if (this.arrowsSteer) {
+        const turn = 1.9 * dt * this.sensitivity;
+        if (this.down('ArrowLeft')) dx -= turn;
+        if (this.down('ArrowRight')) dx += turn;
+        if (this.down('ArrowUp')) dy -= turn * 0.7;
+        if (this.down('ArrowDown')) dy += turn * 0.7;
+      }
+    }
+
+    return { dx, dy: dy * (this.invertY ? -1 : 1) };
   }
 
   endFrame() {
@@ -55111,14 +55236,18 @@ class Input {
   }
 }
 
+}
+
 
 /* ===== src/engine/audio.js ===== */
+var AudioEngine;
+{
 // ---------------------------------------------------------------------------
 // Fully synthesised audio. No sample files: every gunshot, footstep, creak and
 // drone is built from oscillators and filtered noise at runtime.
 // ---------------------------------------------------------------------------
 
-class AudioEngine {
+AudioEngine = class AudioEngine {
   constructor() {
     this.ctx = null;
     this.ready = false;
@@ -55841,8 +55970,12 @@ class AudioEngine {
   }
 }
 
+}
+
 
 /* ===== src/engine/vocals.js ===== */
+var TIMBRES, Vocals;
+{
 // ---------------------------------------------------------------------------
 // مُخلِّق الأصوات البشرية — formant vocal synthesis.
 //
@@ -55858,7 +55991,7 @@ class AudioEngine {
 // From that one instrument we build sobs, gasps, screams, whimpers and laughs.
 // ---------------------------------------------------------------------------
 
-const TIMBRES = {
+TIMBRES = {
   karim: {
     f0: 104,
     jitter: 0.026,
@@ -55902,7 +56035,7 @@ const VOWELS = {
   u: [0.55, 0.52, 0.88],
 };
 
-class Vocals {
+Vocals = class Vocals {
   constructor(engine) {
     this.engine = engine; // AudioEngine
     this.wave = null;
@@ -56267,8 +56400,12 @@ class Vocals {
   }
 }
 
+}
+
 
 /* ===== src/engine/voicebank.js ===== */
+var VoiceBank;
+{
 // ---------------------------------------------------------------------------
 // بنك الأصوات — plays the pre-recorded neural-TTS dialogue clips.
 //
@@ -56278,7 +56415,7 @@ class Vocals {
 // send for the villain so he always sounds like the building itself.
 // ---------------------------------------------------------------------------
 
-class VoiceBank {
+VoiceBank = class VoiceBank {
   constructor(audio, data) {
     this.audio = audio;
     this.data = data || {};
@@ -56361,8 +56498,12 @@ class VoiceBank {
   }
 }
 
+}
+
 
 /* ===== src/engine/voice.js ===== */
+var CHARACTERS, EMOTIONS, VoiceDirector;
+{
 // ---------------------------------------------------------------------------
 // مخرج الحوار — dialogue director.
 //
@@ -56377,7 +56518,7 @@ class VoiceBank {
 // the line as a murmur in the character's own timbre instead of going silent.
 // ---------------------------------------------------------------------------
 
-const CHARACTERS = {
+CHARACTERS = {
   karim: { name: 'كريم', color: '#cfe3ff', pitch: 0.58, rate: 0.9, gender: 'male' },
   layla: { name: 'ليلى', color: '#ffd9ea', pitch: 1.88, rate: 1.14, gender: 'female' },
   shepherd: { name: 'الراعي', color: '#ff5d5d', pitch: 0.16, rate: 0.66, gender: 'male' },
@@ -56390,7 +56531,7 @@ const CHARACTERS = {
  * `between` fires between clauses, which is what makes a crying line sound
  * like crying rather than a sad sentence.
  */
-const EMOTIONS = {
+EMOTIONS = {
   calm: { pitch: 0, rate: 0, volume: 1 },
   soft: { pitch: -0.06, rate: -0.08, volume: 0.85, post: 'breath' },
   tense: { pitch: 0.1, rate: 0.12, volume: 1 },
@@ -56408,7 +56549,7 @@ const EMOTIONS = {
 const FEMALE_HINTS = /hoda|laila|layla|salma|amira|amina|noura|nora|maryam|zeina|sana|fatima|female|woman|أنثى|هدى|ليلى/i;
 const MALE_HINTS = /majed|maged|naayf|nayef|tarik|tariq|hamed|omar|khalid|male|man|ذكر|ماجد/i;
 
-class VoiceDirector {
+VoiceDirector = class VoiceDirector {
   constructor(audio, vocals, bank) {
     this.audio = audio;
     this.vocals = vocals;
@@ -56691,8 +56832,12 @@ class VoiceDirector {
   }
 }
 
+}
+
 
 /* ===== src/engine/cinema.js ===== */
+var Cinema;
+{
 
 
 // ---------------------------------------------------------------------------
@@ -56719,7 +56864,7 @@ function drift(t, seed) {
        + Math.sin(t * 3.1 + seed * 4.1) * 0.13;
 }
 
-class Cinema {
+Cinema = class Cinema {
   constructor(camera) {
     this.camera = camera;
     this.active = false;
@@ -56874,12 +57019,16 @@ class Cinema {
   }
 }
 
+}
+
 
 /* ===== src/game/voicebank-data.js ===== */
+var VOICE_DATA;
+{
 // Generated by tools/pack-voices.mjs — do not edit by hand.
 // 124 neural-TTS dialogue clips (MP3, 24 kHz mono), keyed by
 // `who|clauseText` exactly as the dialogue director looks them up.
-const VOICE_DATA = {
+VOICE_DATA = {
 'karim|هذا المطر لا يريد أن يتوقف.':'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qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
 'layla|بابا، قدماي تؤلمانني.':'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//NkxPMd3DIQ6DhGAT2d8eMS5yZFCUe0HJWYSw0rkXzKijrJBScjahECT40iRIkTGNQ3wwqk1+qvVXVVVVAVkZj2Y+MzMBCmrfsdVeMar68Ywqxr/+Ubb/Y/8o1VaQZjZv/ZgIUzBQFYZQVaFExqAquzAR3/ZmP9Tqw1AS2NY34VlEwCOqusY9QEBYMBCj2o//NkxP4lVDIAAFjM3VFHsBGuy+okteqvVLir+pMGCiSMKJVS4dVVCgNMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxOsg/DnkAEiGTFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
 'karim|لا تبتعدي عني يا ليلى.':'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qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqpMQU1FMy4xMDCqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//NkxHwAAANIAAAAAKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq',
@@ -57006,15 +57155,19 @@ const VOICE_DATA = {
 'karim|صمام 2 من ٣.':'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ISBjw7kM29g1nKqiSVEiJEAgEJRaiRGWqq8zVVVbh/ZmZeN+qsx1Y2xfqoCJi6rGY7S/ql/qv+pd6v9Jj9mX2Zv/1LX1AQEBAVjHszVV+qpQMBAQqMwEKY6p/1SpakfxmUgwEzGuzHqoVfqw//NkxOohrCIUKhmHzcozFGAhTd6qqqqUX6TMzVSjfQoV0FBQY7FwUkxBTUUzLjEwMKqqw1eRkegiCRkYGIIjIyGBCMjIy//mR6QjIyO2iMv//////lllI2VgYKo4wlgoIGCDoLFKGBggaOhMsssf////////+yyykbLLLHIj5flsssyNlayo5CWCggYIOg4o//NkxOYfa/IAADBHAShgoIGEDpVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxOAY3DjcDAgHiFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NkxHwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV'
 };
 
+}
+
 
 /* ===== src/game/builder.js ===== */
+var TILE, createMaterials, PROPS, Level, buildLevel;
+{
 
 
 // ---------------------------------------------------------------------------
 // Turns an ASCII level definition into geometry, collision and a nav grid.
 // ---------------------------------------------------------------------------
 
-const TILE = 2.6;
+TILE = 2.6;
 
 const WALL_CHARS = new Set(['#', 'X']);
 const FLOOR_TYPES = {
@@ -57040,31 +57193,38 @@ function mat(textures, key, opts = {}) {
   });
   if (material.normalMap) material.normalScale.set(opts.normalScale ?? 1, opts.normalScale ?? 1);
   material.userData.reflectivity = opts.reflectivity ?? 0;
+  // architecture takes only a hint of the probe; the ray-marched passes do the
+  // heavy lifting and doubling up would wash the levels out
+  material.envMapIntensity = opts.envMapIntensity ?? (material.metalness > 0.5 ? 1.8 : 0.5);
   return material;
 }
 
-function createMaterials(textures) {
+createMaterials = function createMaterials(textures) {
   return {
-    wood: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85 }),
+    wood: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85, normalScale: 1.4 }),
     carpet: mat(textures, 'darkWood', { color: 0x6b2f38, reflectivity: 0.04, roughness: 1 }),
-    tile: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45 }),
-    concrete: mat(textures, 'concrete', { reflectivity: 0.12, roughness: 0.95 }),
+    tile: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45, normalScale: 1.6 }),
+    concrete: mat(textures, 'concrete', { reflectivity: 0.12, roughness: 0.95, normalScale: 1.3 }),
     grass: mat(textures, 'concrete', { color: 0x33422a, reflectivity: 0.08, roughness: 1 }),
+    trim: mat(textures, 'darkWood', { color: 0x6b5744, reflectivity: 0.22, roughness: 0.62 }),
+    stoneTrim: mat(textures, 'wallStone', { color: 0xa39a8c, reflectivity: 0.12, roughness: 0.82 }),
     water: new THREE.MeshStandardMaterial({
       color: 0x25454f, roughness: 0.07, metalness: 0.2, transparent: true, opacity: 0.82,
     }),
-    wallPaper: mat(textures, 'wallPaper', { reflectivity: 0.06, roughness: 0.95 }),
-    wallStone: mat(textures, 'wallStone', { color: 0x8f8f96, reflectivity: 0.1, roughness: 0.9 }),
+    wallPaper: mat(textures, 'wallPaper', { reflectivity: 0.06, roughness: 0.95, normalScale: 1.5 }),
+    wallStone: mat(textures, 'wallStone', { color: 0x8f8f96, reflectivity: 0.1, roughness: 0.9, normalScale: 1.5 }),
     panel: mat(textures, 'darkWood', { reflectivity: 0.2, roughness: 0.75 }),
-    metal: mat(textures, 'metal', { reflectivity: 0.7, roughness: 0.4, metalness: 1 }),
-    mirror: new THREE.MeshStandardMaterial({ color: 0x9fb0c0, roughness: 0.02, metalness: 1 }),
+    metal: mat(textures, 'metal', { reflectivity: 0.7, roughness: 0.4, metalness: 1, envMapIntensity: 2.0 }),
+    mirror: new THREE.MeshStandardMaterial({
+      color: 0x9fb0c0, roughness: 0.02, metalness: 1, envMapIntensity: 2.2,
+    }),
     glass: new THREE.MeshStandardMaterial({
       color: 0x88aabb, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.35,
     }),
     cloth: new THREE.MeshStandardMaterial({ color: 0x2a2028, roughness: 1 }),
     flesh: new THREE.MeshStandardMaterial({ color: 0x6d2b2b, roughness: 0.75 }),
     bone: new THREE.MeshStandardMaterial({ color: 0xc9bfa4, roughness: 0.6 }),
-    gold: new THREE.MeshStandardMaterial({ color: 0xb08a3a, roughness: 0.28, metalness: 1 }),
+    gold: new THREE.MeshStandardMaterial({ color: 0xb08a3a, roughness: 0.28, metalness: 1, envMapIntensity: 2.0 }),
     blood: new THREE.MeshStandardMaterial({
       color: 0x4a0d0d, roughness: 0.25, metalness: 0, transparent: true, opacity: 0.92,
     }),
@@ -57081,15 +57241,16 @@ function group(...children) {
   return g;
 }
 
-function part(geometry, material, x = 0, y = 0, z = 0) {
+function part(geometry, material, x = 0, y = 0, z = 0, rot = null) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.position.set(x, y, z);
+  if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
 }
 
-const PROPS = {
+PROPS = {
   table(m) {
     const g = group(
       part(box(1.7, 0.12, 1.0), m.panel, 0, 0.86),
@@ -57312,7 +57473,7 @@ const PROPS = {
 
 // --- level construction -----------------------------------------------------
 
-class Level {
+Level = class Level {
   constructor(def, textures) {
     this.def = def;
     this.grid = def.blueprint || def.grid;
@@ -57467,24 +57628,184 @@ class Level {
       if (ceil) ceil.castShadow = false;
     }
 
-    // doors get their own swinging mesh
+    // Doors: a cased opening (jambs + lintel + threshold) with a panelled leaf
+    // hinged inside it, so a doorway reads as carpentry and not a hole.
+    const trim = m[def.trimMaterial || 'trim'] || m.trim;
+    const doorH = Math.min(this.wallHeight * 0.86, 2.35);
     this.doors.forEach((door) => {
-      const pivot = new THREE.Group();
       const p = this.toWorld(door.col, door.row);
       const horizontal = this.isSolid(door.col - 1, door.row) && this.isSolid(door.col + 1, door.row);
-      pivot.position.set(p.x, 0, p.z);
-      const leaf = part(box(TILE * 0.95, this.wallHeight * 0.92, 0.14), m.panel, TILE * 0.47, this.wallHeight * 0.46, 0);
-      const handle = part(new THREE.SphereGeometry(0.08, 8, 6), m.metal, TILE * 0.85, this.wallHeight * 0.45, 0.12);
-      pivot.add(leaf, handle);
-      if (!horizontal) pivot.rotation.y = Math.PI / 2;
-      pivot.position.x -= horizontal ? TILE * 0.5 : 0;
-      pivot.position.z -= horizontal ? 0 : TILE * 0.5;
+      const frame = new THREE.Group();
+      frame.position.set(p.x, 0, p.z);
+      if (!horizontal) frame.rotation.y = Math.PI / 2;
+
+      const jambT = 0.14;
+      const opening = TILE - jambT * 2;
+      // head casing above the opening, filling up to the ceiling
+      frame.add(part(box(TILE, this.wallHeight - doorH, 0.34), trim,
+        0, doorH + (this.wallHeight - doorH) / 2, 0));
+      frame.add(part(box(TILE * 1.02, 0.16, 0.40), trim, 0, doorH, 0));
+      // side jambs
+      [-1, 1].forEach((side) => {
+        frame.add(part(box(jambT, doorH, 0.34), trim, side * (TILE - jambT) / 2, doorH / 2, 0));
+      });
+      // threshold
+      frame.add(part(box(opening, 0.05, 0.30), trim, 0, 0.025, 0));
+      this.group.add(frame);
+
+      // the leaf swings from the hinge side of the opening
+      const pivot = new THREE.Group();
+      pivot.position.copy(frame.position);
+      pivot.rotation.y = frame.rotation.y;
+      pivot.translateX(-opening / 2);
+      const leafW = opening * 0.98;
+      const leaf = part(box(leafW, doorH * 0.985, 0.055), m.panel, leafW / 2, doorH / 2, 0);
+      pivot.add(leaf);
+      // two recessed panels and rails, the way a real door is built up
+      [0.30, 0.68].forEach((h) => {
+        pivot.add(part(box(leafW * 0.66, doorH * 0.26, 0.02), trim, leafW / 2, doorH * h, 0.038));
+      });
+      pivot.add(part(box(leafW, 0.09, 0.03), trim, leafW / 2, doorH * 0.49, 0.038));
+      // handle + escutcheon on the latch side
+      pivot.add(part(box(0.10, 0.16, 0.02), m.metal, leafW * 0.88, doorH * 0.46, 0.04));
+      pivot.add(part(new THREE.CylinderGeometry(0.022, 0.022, 0.09, 8), m.metal,
+        leafW * 0.88, doorH * 0.46, 0.085, [Math.PI / 2, 0, 0]));
+      pivot.add(part(new THREE.SphereGeometry(0.045, 10, 8), m.metal, leafW * 0.88, doorH * 0.46, 0.125));
+      // hinges
+      [0.18, 0.82].forEach((h) => {
+        pivot.add(part(box(0.04, 0.13, 0.05), m.metal, 0.02, doorH * h, 0.0));
+      });
+
       door.baseRotation = pivot.rotation.y;
       door.mesh = pivot;
       this.group.add(pivot);
     });
 
+    this.#buildTrim(trim);
+    this.#buildSconces();
+    this.#buildWindows();
+
     (def.props || []).forEach((spec) => this.placeProp(spec));
+  }
+
+  /** Every floor edge that meets a wall gets a skirting board and a cornice. */
+  #buildTrim(trimMaterial) {
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+    const edges = [];
+    this.floorKind.forEach((kind, key) => {
+      const [col, row] = key.split(',').map(Number);
+      DIRS.forEach(([dc, dr, yaw]) => {
+        if (this.isSolid(col + dc, row + dr)) edges.push([col, row, dc, dr, yaw]);
+      });
+    });
+    if (!edges.length) return;
+
+    const place = (geometry, height, material) => {
+      const mesh = new THREE.InstancedMesh(geometry, material, edges.length);
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      const dummy = new THREE.Object3D();
+      edges.forEach(([col, row, dc, dr, yaw], i) => {
+        const p = this.toWorld(col, row);
+        dummy.position.set(p.x + dc * TILE * 0.47, height, p.z + dr * TILE * 0.47);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      this.group.add(mesh);
+    };
+
+    place(box(TILE, 0.17, 0.07), 0.085, trimMaterial);                      // skirting
+    if (this.def.ceiling !== false) {
+      place(box(TILE, 0.13, 0.13), this.wallHeight - 0.07, trimMaterial);   // cornice
+    }
+  }
+
+  /**
+   * Wall lights on a regular rhythm — placed against walls, never floating,
+   * and spaced so a corridor reads as lit at intervals rather than at random.
+   */
+  #buildSconces() {
+    if (this.def.sconces === false) return;
+    const m = this.materials;
+    const spacing = this.def.sconceSpacing ?? 5;
+    const tint = this.def.sconceColor ?? 0xffa851;
+    let placed = 0;
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+
+    this.floorKind.forEach((kind, key) => {
+      if (placed >= (this.def.sconceLimit ?? 26)) return;
+      const [col, row] = key.split(',').map(Number);
+      // deterministic rhythm rather than random scatter
+      if ((col * 3 + row * 5) % spacing !== 0) return;
+      const dir = DIRS.find(([dc, dr]) => this.isSolid(col + dc, row + dr));
+      if (!dir) return;
+      const [dc, dr, yaw] = dir;
+      const p = this.toWorld(col, row);
+      const node = new THREE.Group();
+      node.position.set(p.x + dc * TILE * 0.44, 0, p.z + dr * TILE * 0.44);
+      node.rotation.y = yaw;
+      const h = Math.min(2.15, this.wallHeight * 0.55);
+      node.add(part(box(0.16, 0.30, 0.05), m.metal, 0, h, 0));                 // back plate
+      node.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.22, 6), m.metal, 0, h + 0.02, 0.11, [Math.PI / 2.6, 0, 0]));
+      node.add(part(new THREE.CylinderGeometry(0.075, 0.045, 0.16, 8, 1, true), m.metal, 0, h + 0.16, 0.20));
+      const wax = new THREE.MeshStandardMaterial({ color: 0xe6d9bd, roughness: 0.85 });
+      node.add(part(new THREE.CylinderGeometry(0.028, 0.032, 0.14, 8), wax, 0, h + 0.26, 0.20));
+      const light = new THREE.PointLight(tint, 13, 8.5, 1.6);
+      light.position.set(0, h + 0.36, 0.22);
+      node.add(light);
+      node.userData.light = light;
+      node.userData.flicker = true;
+      this.group.add(node);
+      this.props.push(node);
+      this.lights.push(light);
+      placed += 1;
+    });
+  }
+
+  /** Windows punched into the walls that face outside, with night behind them. */
+  #buildWindows() {
+    if (this.def.windows === false) return;
+    const m = this.materials;
+    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+    const night = new THREE.MeshStandardMaterial({
+      color: 0x0b1220, emissive: 0x25406e, emissiveIntensity: 0.85, roughness: 0.25, metalness: 0.1,
+    });
+    night.userData.reflectivity = 0.35;
+    let placed = 0;
+
+    this.floorKind.forEach((kind, key) => {
+      if (placed >= (this.def.windowLimit ?? 14)) return;
+      const [col, row] = key.split(',').map(Number);
+      if ((col * 7 + row * 11) % 6 !== 0) return;
+      const dir = DIRS.find(([dc, dr]) => {
+        // the wall must be solid AND have open void directly behind it
+        if (!this.isSolid(col + dc, row + dr)) return false;
+        return this.charAt(col + dc * 2, row + dr * 2) === ' ';
+      });
+      if (!dir) return;
+      const [dc, dr, yaw] = dir;
+      const p = this.toWorld(col, row);
+      const node = new THREE.Group();
+      node.position.set(p.x + dc * TILE * 0.49, 0, p.z + dr * TILE * 0.49);
+      node.rotation.y = yaw;
+      const sill = Math.min(1.05, this.wallHeight * 0.28);
+      const h = Math.min(1.35, this.wallHeight * 0.42);
+      const w = TILE * 0.62;
+      node.add(part(box(w, h, 0.05), night, 0, sill + h / 2, 0.03));           // the night outside
+      node.add(part(box(w, h, 0.03), m.glass, 0, sill + h / 2, 0.06));
+      // casing, mullion and sill
+      node.add(part(box(w + 0.18, 0.10, 0.14), m.trim, 0, sill + h + 0.05, 0.07));
+      node.add(part(box(w + 0.18, 0.12, 0.22), m.trim, 0, sill - 0.05, 0.09));
+      [-1, 1].forEach((side) => {
+        node.add(part(box(0.09, h + 0.1, 0.14), m.trim, side * (w / 2 + 0.045), sill + h / 2, 0.07));
+      });
+      node.add(part(box(0.05, h, 0.10), m.trim, 0, sill + h / 2, 0.08));
+      node.add(part(box(w, 0.05, 0.10), m.trim, 0, sill + h * 0.5, 0.08));
+      this.group.add(node);
+      placed += 1;
+    });
   }
 
   placeProp(spec) {
@@ -57681,12 +58002,662 @@ class Level {
   }
 }
 
-function buildLevel(def, textures) {
+buildLevel = function buildLevel(def, textures) {
   return new Level(def, textures);
+}
+
+}
+
+
+/* ===== src/game/characters.js ===== */
+var BUILDS, buildCharacter;
+{
+
+
+// ---------------------------------------------------------------------------
+// بناء الشخصيات — character rig builder.
+//
+// One parametric body used by everyone. What separates a nine-year-old girl
+// from a hunched crawler is the proportion table, not different code:
+// head-to-body ratio, limb thickness, spine curvature, and the face set.
+//
+// Faces are built from primitives — brow, nose, cheeks, jaw, lips, eyes with
+// real sclera and iris — so they read at conversation distance in a cutscene.
+// ---------------------------------------------------------------------------
+
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const sph = (r, a = 10, b = 8) => new THREE.SphereGeometry(r, a, b);
+
+function put(parent, geometry, material, pos, rot, scale) {
+  const mesh = new THREE.Mesh(geometry, material);
+  if (pos) mesh.position.set(pos[0], pos[1], pos[2]);
+  if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
+  if (scale) mesh.scale.set(scale[0], scale[1], scale[2]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+
+/**
+ * Presets. `head` is the head radius as a fraction of body height — children
+ * have proportionally much larger heads, which is most of what makes a small
+ * figure read as a child rather than a shrunken adult.
+ */
+BUILDS = {
+  karim: {
+    scale: 1.0, head: 0.118, shoulder: 0.20, limb: 1.0, hunch: 0.04,
+    skin: 0x9a7355, cloth: 0x2f3742, accent: 0x1d232b, hair: 0x171412,
+    face: 'adult', beard: true, hairStyle: 'short',
+  },
+  layla: {
+    scale: 0.66, head: 0.150, shoulder: 0.135, limb: 0.86, hunch: 0.0,
+    skin: 0xb8907a, cloth: 0x5e2b3c, accent: 0x7a3b50, hair: 0x241610,
+    face: 'child', beard: false, hairStyle: 'long', dress: true,
+  },
+  crawler: {
+    scale: 0.94, head: 0.104, shoulder: 0.165, limb: 1.22, hunch: 0.55,
+    skin: 0x8e8071, cloth: 0x23202a, accent: 0x141118, hair: 0x000000,
+    face: 'monster', beard: false, hairStyle: 'none', gaunt: true,
+  },
+  stalker: {
+    scale: 1.2, head: 0.098, shoulder: 0.215, limb: 1.15, hunch: 0.34,
+    skin: 0x6f5f56, cloth: 0x161820, accent: 0x0d0f14, hair: 0x000000,
+    face: 'monster', beard: false, hairStyle: 'none', gaunt: true,
+  },
+  shepherd: {
+    scale: 1.42, head: 0.105, shoulder: 0.27, limb: 1.06, hunch: 0.10,
+    skin: 0x6d5b62, cloth: 0x120d14, accent: 0x090609, hair: 0x000000,
+    face: 'masked', beard: false, hairStyle: 'none',
+  },
+};
+
+function makeMaterials(build) {
+  const skin = new THREE.MeshStandardMaterial({ color: build.skin, roughness: 0.78, metalness: 0 });
+  const cloth = new THREE.MeshStandardMaterial({ color: build.cloth, roughness: 0.94, metalness: 0 });
+  const accent = new THREE.MeshStandardMaterial({ color: build.accent, roughness: 0.88, metalness: 0 });
+  const hair = new THREE.MeshStandardMaterial({ color: build.hair, roughness: 0.82, metalness: 0 });
+  const sclera = new THREE.MeshStandardMaterial({ color: 0xd8d2c8, roughness: 0.35, metalness: 0 });
+  const iris = new THREE.MeshStandardMaterial({ color: 0x2c1c12, roughness: 0.25, metalness: 0 });
+  const lips = new THREE.MeshStandardMaterial({ color: 0x8a5148, roughness: 0.7, metalness: 0 });
+  [skin, cloth, accent, hair, lips].forEach((m) => { m.userData.reflectivity = 0.05; });
+  sclera.userData.reflectivity = 0.4;
+  iris.userData.reflectivity = 0.6;
+  return { skin, cloth, accent, hair, sclera, iris, lips };
+}
+
+/**
+ * Builds a face into `head`. Returns handles for the parts that animate:
+ * eyelids (blinking) and the jaw (speaking, screaming).
+ */
+function buildFace(head, m, build, r) {
+  const face = {};
+
+  // cranium: a sphere squashed front-to-back, plus a flatter back plate
+  put(head, sph(r, 14, 12), m.skin, [0, 0, 0], null, [0.92, 1.06, 0.98]);
+  put(head, sph(r * 0.86, 10, 8), m.skin, [0, -r * 0.18, -r * 0.22], null, [0.95, 0.9, 0.9]);
+
+  if (build.face === 'masked') {
+    // a leather mask: faceplate, straps, and two burning eye slits
+    const leather = new THREE.MeshStandardMaterial({ color: 0xcdbf9f, roughness: 0.62, metalness: 0 });
+    leather.userData.reflectivity = 0.12;
+    put(head, box(r * 1.62, r * 1.95, r * 0.22), leather, [0, -r * 0.05, r * 0.80]);
+    put(head, box(r * 1.30, r * 0.30, r * 0.20), leather, [0, r * 0.62, r * 0.86]);
+    put(head, box(r * 0.26, r * 1.9, r * 0.14), m.accent, [-r * 0.86, 0, r * 0.5]);
+    put(head, box(r * 0.26, r * 1.9, r * 0.14), m.accent, [r * 0.86, 0, r * 0.5]);
+    const glow = new THREE.MeshStandardMaterial({
+      color: 0x000000, emissive: 0xff2a12, emissiveIntensity: 4, roughness: 1,
+    });
+    face.eyeGlow = glow;
+    [-1, 1].forEach((side) => {
+      put(head, box(r * 0.44, r * 0.13, r * 0.08), glow, [side * r * 0.38, r * 0.22, r * 0.92]);
+    });
+    // stitched mouth
+    for (let i = -2; i <= 2; i += 1) {
+      put(head, box(r * 0.04, r * 0.22, r * 0.06), m.accent, [i * r * 0.16, -r * 0.55, r * 0.92]);
+    }
+    return face;
+  }
+
+  const child = build.face === 'child';
+  const monster = build.face === 'monster';
+  // children: eyes lower and wider apart, small nose, round cheeks
+  const eyeY = child ? -r * 0.02 : r * 0.10;
+  const eyeX = r * (child ? 0.40 : 0.36);
+  const eyeR = r * (child ? 0.19 : 0.155);
+  const front = r * 0.80;
+
+  // brow ridge — heavy on the monsters, soft on the child
+  put(head, box(r * 1.34, r * (monster ? 0.30 : 0.16), r * 0.30), m.skin,
+    [0, eyeY + r * (child ? 0.30 : 0.34), front * 0.88], [monster ? 0.22 : 0.1, 0, 0]);
+
+  // eye sockets, eyeballs, irises
+  const eyes = [];
+  [-1, 1].forEach((side) => {
+    const socket = new THREE.Group();
+    socket.position.set(side * eyeX, eyeY, front * 0.72);
+    head.add(socket);
+    put(socket, sph(eyeR, 10, 8), m.sclera, [0, 0, 0], null, [1, 0.86, 0.7]);
+    put(socket, sph(eyeR * 0.52, 8, 6), m.iris, [0, 0, eyeR * 0.62], null, [1, 1, 0.5]);
+    put(socket, sph(eyeR * 0.24, 6, 5), new THREE.MeshStandardMaterial({
+      color: 0x050505, roughness: 0.1,
+    }), [0, 0, eyeR * 0.78], null, [1, 1, 0.4]);
+    // upper lid — driven for blinking
+    const lid = put(socket, sph(eyeR * 1.06, 10, 6), m.skin,
+      [0, eyeR * 0.62, 0], null, [1.05, 0.6, 0.9]);
+    eyes.push(lid);
+    if (monster) {
+      // sunken, shadowed sockets
+      put(socket, new THREE.TorusGeometry(eyeR * 1.15, eyeR * 0.3, 6, 12), m.accent,
+        [0, 0, -eyeR * 0.2], [0, 0, 0]);
+    }
+  });
+  face.lids = eyes;
+
+  // nose: bridge + tip + nostrils
+  const noseLen = r * (child ? 0.34 : 0.46);
+  put(head, box(r * 0.20, noseLen, r * 0.22), m.skin, [0, eyeY - noseLen * 0.35, front * 0.86], [0.12, 0, 0]);
+  put(head, sph(r * (child ? 0.13 : 0.115), 8, 6), m.skin, [0, eyeY - noseLen * 0.78, front * 0.95]);
+  [-1, 1].forEach((side) => {
+    put(head, sph(r * 0.06, 6, 5), m.accent, [side * r * 0.11, eyeY - noseLen * 0.86, front * 0.88]);
+  });
+
+  // cheekbones
+  [-1, 1].forEach((side) => {
+    put(head, sph(r * (child ? 0.30 : 0.26), 8, 6), m.skin,
+      [side * r * 0.52, eyeY - r * 0.30, front * 0.58], null,
+      [1, monster ? 0.6 : 0.85, 0.7]);
+  });
+
+  // jaw on a hinge so it can open when they speak or scream
+  const jaw = new THREE.Group();
+  jaw.position.set(0, -r * 0.42, -r * 0.10);
+  head.add(jaw);
+  put(jaw, box(r * 1.06, r * 0.52, r * 1.12), m.skin, [0, -r * 0.18, r * 0.42], null,
+    [1, 1, child ? 0.9 : 1]);
+  put(jaw, box(r * 0.62, r * 0.12, r * 0.14), m.lips, [0, -r * 0.06, r * 0.94]);
+  if (monster) {
+    // a broken row of teeth
+    for (let i = -3; i <= 3; i += 1) {
+      put(jaw, box(r * 0.08, r * 0.16, r * 0.06), m.sclera,
+        [i * r * 0.13, -r * 0.02, r * 0.95]);
+    }
+  }
+  face.jaw = jaw;
+
+  // ears
+  [-1, 1].forEach((side) => {
+    put(head, box(r * 0.10, r * 0.34, r * 0.20), m.skin, [side * r * 0.92, eyeY - r * 0.05, r * 0.02]);
+  });
+
+  // hair
+  if (build.hairStyle === 'short') {
+    put(head, sph(r * 1.02, 12, 10), m.hair, [0, r * 0.18, -r * 0.06], null, [1, 0.78, 1]);
+    put(head, box(r * 1.5, r * 0.5, r * 0.2), m.hair, [0, r * 0.5, r * 0.7]);
+  } else if (build.hairStyle === 'long') {
+    put(head, sph(r * 1.06, 12, 10), m.hair, [0, r * 0.20, -r * 0.04], null, [1, 0.85, 1]);
+    // two braids down the back
+    put(head, box(r * 1.5, r * 1.7, r * 0.5), m.hair, [0, -r * 0.5, -r * 0.75]);
+    [-1, 1].forEach((side) => {
+      put(head, box(r * 0.42, r * 1.5, r * 0.42), m.hair, [side * r * 0.72, -r * 0.95, -r * 0.35], [0.12, 0, side * 0.1]);
+    });
+  }
+
+  if (build.beard) {
+    put(head, box(r * 1.0, r * 0.55, r * 0.35), m.hair, [0, -r * 0.72, r * 0.62], [0.1, 0, 0]);
+  }
+
+  return face;
+}
+
+/**
+ * Assembles a full rig. Returns the same shape the old builder returned
+ * (root/hips/neck/head/arms/legs) plus `face` and `hands`.
+ */
+buildCharacter = function buildCharacter(kind) {
+  const build = BUILDS[kind] || BUILDS.karim;
+  const m = makeMaterials(build);
+  const s = build.scale;
+  const limb = build.limb;
+  const root = new THREE.Group();
+
+  const hips = new THREE.Group();
+  hips.position.y = 0.92 * s;
+  hips.rotation.x = build.hunch * 0.5;
+  root.add(hips);
+
+  // pelvis + torso: tapered, with a chest that is wider than the waist
+  put(hips, box(0.30 * s, 0.20 * s, 0.20 * s), m.cloth, [0, -0.02 * s, 0]);
+  const torso = new THREE.Group();
+  torso.position.y = 0.30 * s;
+  hips.add(torso);
+  put(torso, box(0.40 * s, 0.42 * s, 0.23 * s), m.cloth, [0, 0.02 * s, 0]);
+  put(torso, box(build.shoulder * 2.15, 0.20 * s, 0.25 * s), m.cloth, [0, 0.26 * s, 0]);
+  // collar / lapels
+  put(torso, box(build.shoulder * 1.5, 0.10 * s, 0.05 * s), m.accent, [0, 0.30 * s, 0.12 * s]);
+  if (build.gaunt) {
+    // ribs pushing through the skin
+    for (let i = 0; i < 4; i += 1) {
+      put(torso, box(0.30 * s, 0.025 * s, 0.03 * s), m.skin, [0, (0.16 - i * 0.09) * s, 0.115 * s]);
+    }
+  }
+  if (build.dress) {
+    put(hips, new THREE.CylinderGeometry(0.16 * s, 0.30 * s, 0.34 * s, 12), m.cloth, [0, -0.16 * s, 0]);
+    put(hips, new THREE.CylinderGeometry(0.30 * s, 0.31 * s, 0.04 * s, 12), m.accent, [0, -0.33 * s, 0]);
+  }
+
+  const neck = new THREE.Group();
+  neck.position.y = 0.36 * s;
+  torso.add(neck);
+  put(neck, new THREE.CylinderGeometry(0.055 * s, 0.07 * s, 0.10 * s, 8), m.skin, [0, 0.02 * s, 0]);
+
+  const headRadius = build.head * s * 2.0;
+  const head = new THREE.Group();
+  head.position.y = 0.08 * s + headRadius * 0.9;
+  neck.add(head);
+  const face = buildFace(head, m, build, headRadius);
+
+  // --- limbs ---
+  const arms = [];
+  const legs = [];
+  const hands = [];
+  [-1, 1].forEach((side) => {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * build.shoulder * s, 0.24 * s, 0);
+    torso.add(shoulder);
+    put(shoulder, sph(0.062 * s, 8, 6), m.cloth, [0, 0, 0]);
+    put(shoulder, box(0.10 * s, 0.34 * s * limb, 0.10 * s), m.cloth, [0, -0.18 * s * limb, 0]);
+
+    const elbow = new THREE.Group();
+    elbow.position.y = -0.36 * s * limb;
+    shoulder.add(elbow);
+    put(elbow, box(0.085 * s, 0.32 * s * limb, 0.085 * s), m.skin, [0, -0.16 * s * limb, 0]);
+
+    // hand: palm plus a thumb, enough to read as a hand in a close-up
+    const hand = new THREE.Group();
+    hand.position.y = -0.34 * s * limb;
+    elbow.add(hand);
+    put(hand, box(0.075 * s, 0.10 * s, 0.045 * s), m.skin, [0, -0.05 * s, 0]);
+    put(hand, box(0.028 * s, 0.06 * s, 0.032 * s), m.skin, [side * 0.045 * s, -0.03 * s, 0], [0, 0, side * 0.5]);
+    if (build.gaunt) {
+      // long fingers/claws
+      for (let f = -1; f <= 1; f += 1) {
+        put(hand, box(0.018 * s, 0.11 * s, 0.018 * s), m.skin, [f * 0.024 * s, -0.14 * s, 0]);
+      }
+    }
+    hands.push(hand);
+    arms.push({ shoulder, elbow, hand, side });
+
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.11 * s, -0.06 * s, 0);
+    hips.add(hip);
+    put(hip, box(0.135 * s, 0.42 * s * limb, 0.135 * s), m.cloth, [0, -0.21 * s * limb, 0]);
+
+    const knee = new THREE.Group();
+    knee.position.y = -0.42 * s * limb;
+    hip.add(knee);
+    put(knee, box(0.115 * s, 0.40 * s * limb, 0.115 * s), m.cloth, [0, -0.20 * s * limb, 0]);
+    // shoe
+    put(knee, box(0.12 * s, 0.075 * s, 0.24 * s), m.accent, [0, -0.42 * s * limb, 0.05 * s]);
+    legs.push({ hip, knee, side });
+  });
+
+  return {
+    root, hips, torso, neck, head, face, arms, legs, hands,
+    materials: m,
+    build,
+  };
+}
+
+}
+
+
+/* ===== src/game/viewmodels.js ===== */
+var buildViewModel, buildMuzzleFlash, ShellPool;
+{
+
+
+// ---------------------------------------------------------------------------
+// نماذج الأسلحة — first-person view models.
+//
+// Built part by part from primitives with real proportions: a Python-pattern
+// revolver, a side-by-side break-action shotgun, and a felling axe. Every part
+// is named so the animation code can drive the cylinder, the break lever, the
+// hammer and the shell ejector individually.
+// ---------------------------------------------------------------------------
+
+function pbr(color, roughness, metalness, extra = {}) {
+  const m = new THREE.MeshStandardMaterial({ color, roughness, metalness, ...extra });
+  m.userData.reflectivity = metalness > 0.5 ? 0.55 : 0.15;
+  // metals live or die by what they reflect, so lean on the environment probe
+  m.envMapIntensity = metalness > 0.5 ? 2.4 : 1.1;
+  return m;
+}
+
+/** Walnut with a visible grain, generated once and shared by every gun. */
+function walnutTexture() {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      // stretched rings plus fine fibre
+      const ring = Math.sin((x * 0.09) + Math.sin(y * 0.035) * 2.6) * 0.5 + 0.5;
+      const fibre = Math.sin(x * 1.7 + y * 0.11) * 0.5 + 0.5;
+      const blotch = Math.sin(x * 0.021 + 3) * Math.cos(y * 0.017) * 0.5 + 0.5;
+      const shade = 0.42 + ring * 0.3 + fibre * 0.07 + blotch * 0.16;
+      const i = (y * size + x) * 4;
+      image.data[i] = Math.min(255, shade * 132);
+      image.data[i + 1] = Math.min(255, shade * 76);
+      image.data[i + 2] = Math.min(255, shade * 42);
+      image.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+let SHARED = null;
+function materials() {
+  if (SHARED) return SHARED;
+  const wood = pbr(0xffffff, 0.58, 0.05, { map: walnutTexture() });
+  wood.userData.reflectivity = 0.2;
+  // Held metal is kept a touch under full metalness and a good deal lighter
+  // than a physical sample would be: a real blued revolver photographs almost
+  // black indoors, and a black silhouette is unreadable as a view model.
+  SHARED = {
+    blued: pbr(0x555b66, 0.30, 0.88),     // blued steel, read up for the screen
+    steel: pbr(0x9aa3ae, 0.22, 0.9),      // bright machined steel
+    dark: pbr(0x2b2f36, 0.55, 0.6),       // matte furniture
+    wood,
+    brass: pbr(0xc79a45, 0.28, 0.85),
+    rubber: pbr(0x2a2b30, 0.92, 0.05),
+    bone: pbr(0xd9cdb2, 0.65, 0.05),
+    sight: pbr(0xd8e0a0, 0.4, 0.4, { emissive: 0x2a3010, emissiveIntensity: 0.6 }),
+  };
+  return SHARED;
+}
+
+const cyl = (rt, rb, h, seg = 16, open = false) => new THREE.CylinderGeometry(rt, rb, h, seg, 1, open);
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+
+function piece(group, geometry, material, pos, rot, scale) {
+  const mesh = new THREE.Mesh(geometry, material);
+  if (pos) mesh.position.set(pos[0], pos[1], pos[2]);
+  if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
+  if (scale) mesh.scale.set(scale[0], scale[1], scale[2]);
+  mesh.castShadow = false;
+  mesh.receiveShadow = false;
+  mesh.frustumCulled = false;
+  mesh.userData.noGBuffer = true;
+  group.add(mesh);
+  return mesh;
+}
+
+// --- revolver ---------------------------------------------------------------
+
+function buildRevolver() {
+  const m = materials();
+  const root = new THREE.Group();
+  const parts = {};
+
+  // barrel with a vented top rib and an underlug
+  piece(root, cyl(0.026, 0.026, 0.30, 18), m.blued, [0, 0.012, -0.20], [Math.PI / 2, 0, 0]);
+  piece(root, box(0.030, 0.016, 0.30), m.blued, [0, 0.036, -0.20]);
+  piece(root, box(0.036, 0.026, 0.20), m.blued, [0, -0.014, -0.17]);
+  // ejector rod inside the underlug
+  piece(root, cyl(0.007, 0.007, 0.17, 8), m.steel, [0, -0.014, -0.17], [Math.PI / 2, 0, 0]);
+  // front sight blade + rear notch
+  piece(root, box(0.005, 0.016, 0.014), m.dark, [0, 0.050, -0.335]);
+  piece(root, box(0.030, 0.010, 0.014), m.dark, [0, 0.046, -0.062]);
+  piece(root, box(0.007, 0.011, 0.015), m.blued, [0, 0.047, -0.062]);
+
+  // frame
+  piece(root, box(0.036, 0.060, 0.11), m.blued, [0, 0.006, -0.030]);
+  piece(root, box(0.032, 0.040, 0.055), m.blued, [0, -0.010, 0.030]);
+
+  // fluted six-shot cylinder — spins on reload
+  const cylinder = new THREE.Group();
+  cylinder.position.set(0, 0.004, -0.055);
+  root.add(cylinder);
+  piece(cylinder, cyl(0.030, 0.030, 0.062, 6), m.steel, [0, 0, 0], [Math.PI / 2, 0, 0]);
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    piece(cylinder, cyl(0.0065, 0.0065, 0.064, 8), m.dark,
+      [Math.cos(a) * 0.019, Math.sin(a) * 0.019, 0], [Math.PI / 2, 0, 0]);
+  }
+  parts.cylinder = cylinder;
+
+  // hammer on its own pivot so it can cock and fall
+  const hammer = new THREE.Group();
+  hammer.position.set(0, 0.028, 0.012);
+  root.add(hammer);
+  piece(hammer, box(0.010, 0.030, 0.014), m.steel, [0, 0.012, 0.004]);
+  piece(hammer, box(0.014, 0.008, 0.018), m.dark, [0, 0.026, 0.012], [0.4, 0, 0]);
+  parts.hammer = hammer;
+
+  // trigger guard (half torus) and trigger
+  piece(root, new THREE.TorusGeometry(0.023, 0.005, 6, 14, Math.PI), m.blued,
+    [0, -0.030, -0.004], [Math.PI / 2, 0, Math.PI]);
+  const trigger = new THREE.Group();
+  trigger.position.set(0, -0.016, -0.004);
+  root.add(trigger);
+  piece(trigger, box(0.007, 0.024, 0.008), m.steel, [0, -0.010, 0], [0.25, 0, 0]);
+  parts.trigger = trigger;
+
+  // grip: checkered walnut panels around a steel backstrap
+  piece(root, box(0.026, 0.10, 0.045), m.blued, [0, -0.070, 0.048], [0.30, 0, 0]);
+  piece(root, box(0.032, 0.095, 0.040), m.wood, [0, -0.070, 0.046], [0.30, 0, 0]);
+  piece(root, box(0.034, 0.020, 0.030), m.dark, [0, -0.118, 0.062], [0.30, 0, 0]);
+
+  return { root, parts, muzzle: [0, 0.012, -0.36], eject: [0.03, 0.0, -0.05] };
+}
+
+// --- shotgun ----------------------------------------------------------------
+
+function buildShotgun() {
+  const m = materials();
+  const root = new THREE.Group();
+  const parts = {};
+
+  // the barrels break open on reload, so they live on a hinge group
+  const barrels = new THREE.Group();
+  barrels.position.set(0, 0.01, -0.06);
+  root.add(barrels);
+  [-0.017, 0.017].forEach((x) => {
+    piece(barrels, cyl(0.0165, 0.0175, 0.54, 16), m.blued, [x, 0, -0.27], [Math.PI / 2, 0, 0]);
+  });
+  piece(barrels, box(0.010, 0.008, 0.52), m.blued, [0, 0.012, -0.27]);   // top rib
+  piece(barrels, box(0.034, 0.006, 0.50), m.dark, [0, -0.012, -0.26]);   // bottom rib
+  piece(barrels, new THREE.SphereGeometry(0.0055, 8, 6), m.brass, [0, 0.020, -0.535]); // bead
+  // chambers, visible when it breaks open
+  [-0.017, 0.017].forEach((x) => {
+    piece(barrels, cyl(0.0125, 0.0125, 0.06, 12), m.brass, [x, 0, 0.012], [Math.PI / 2, 0, 0]);
+  });
+  parts.barrels = barrels;
+
+  // receiver with a scroll-engraved side plate
+  piece(root, box(0.052, 0.055, 0.16), m.steel, [0, 0.002, 0.045]);
+  piece(root, box(0.055, 0.030, 0.10), m.blued, [0, 0.006, 0.035]);
+  // top break lever
+  const lever = new THREE.Group();
+  lever.position.set(0, 0.030, 0.0);
+  root.add(lever);
+  piece(lever, box(0.012, 0.007, 0.05), m.steel, [0, 0, 0.018]);
+  parts.lever = lever;
+
+  // trigger guard + two triggers
+  piece(root, new THREE.TorusGeometry(0.026, 0.005, 6, 14, Math.PI), m.blued,
+    [0, -0.030, 0.050], [Math.PI / 2, 0, Math.PI]);
+  piece(root, box(0.006, 0.022, 0.008), m.steel, [-0.007, -0.020, 0.040], [0.2, 0, 0]);
+  piece(root, box(0.006, 0.022, 0.008), m.steel, [0.007, -0.020, 0.056], [0.2, 0, 0]);
+
+  // walnut forend under the barrels, checkered top and bottom
+  piece(root, box(0.052, 0.040, 0.17), m.wood, [0, -0.022, -0.17]);
+  piece(root, box(0.054, 0.008, 0.11), m.dark, [0, -0.040, -0.17]);
+
+  // stock: wrist, comb, butt plate
+  piece(root, box(0.040, 0.055, 0.10), m.wood, [0, -0.020, 0.135], [0.16, 0, 0]);
+  piece(root, box(0.046, 0.085, 0.16), m.wood, [0, -0.045, 0.245], [0.10, 0, 0]);
+  piece(root, box(0.048, 0.098, 0.014), m.rubber, [0, -0.058, 0.322], [0.10, 0, 0]);
+
+  return { root, parts, muzzle: [0, 0.01, -0.60], eject: [0, 0.01, -0.02] };
+}
+
+// --- axe --------------------------------------------------------------------
+
+function buildAxe() {
+  const m = materials();
+  const root = new THREE.Group();
+  const parts = {};
+
+  // haft, slightly swelled at the grip
+  piece(root, cyl(0.017, 0.021, 0.62, 10), m.wood, [0, -0.02, -0.16], [Math.PI / 2.35, 0, 0]);
+  piece(root, cyl(0.023, 0.019, 0.10, 10), m.rubber, [0.005, 0.09, 0.06], [Math.PI / 2.35, 0, 0]);
+  piece(root, cyl(0.020, 0.024, 0.03, 10), m.dark, [-0.008, -0.145, -0.34], [Math.PI / 2.35, 0, 0]);
+
+  // head: eye, poll, and a bit that tapers to the edge
+  const head = new THREE.Group();
+  head.position.set(-0.006, -0.115, -0.31);
+  root.add(head);
+  piece(head, box(0.036, 0.062, 0.052), m.steel, [0, 0, 0]);                    // eye
+  piece(head, box(0.034, 0.050, 0.040), m.dark, [0, 0.004, 0.046]);             // poll
+  piece(head, box(0.030, 0.115, 0.080), m.steel, [0, 0.010, -0.058]);           // bit
+  // the cutting edge — a thin wedge, brighter where it has been ground
+  piece(head, box(0.006, 0.140, 0.020), m.bone, [0, 0.014, -0.102]);
+  piece(head, box(0.010, 0.128, 0.030), m.steel, [0, 0.013, -0.092]);
+  parts.head = head;
+
+  return { root, parts, muzzle: [0, 0, 0], eject: [0, 0, 0] };
+}
+
+const BUILDERS = { revolver: buildRevolver, shotgun: buildShotgun, axe: buildAxe };
+
+/** Bare hands, holding the torch. */
+function buildHands() {
+  const m = materials();
+  const root = new THREE.Group();
+  piece(root, cyl(0.024, 0.026, 0.15, 12), m.dark, [0, -0.01, -0.11], [Math.PI / 2, 0, 0]);
+  piece(root, cyl(0.027, 0.027, 0.03, 12), m.steel, [0, -0.01, -0.185], [Math.PI / 2, 0, 0]);
+  piece(root, new THREE.SphereGeometry(0.021, 10, 8), m.sight, [0, -0.01, -0.196]);
+  piece(root, cyl(0.020, 0.022, 0.05, 10), m.rubber, [0, -0.01, -0.02], [Math.PI / 2, 0, 0]);
+  return { root, parts: {}, muzzle: [0, -0.01, -0.2], eject: [0, 0, 0] };
+}
+
+buildViewModel = function buildViewModel(id) {
+  const build = BUILDERS[id] || buildHands;
+  const model = build();
+  model.root.traverse((o) => { o.frustumCulled = false; });
+  return model;
+}
+
+// --- muzzle flash -----------------------------------------------------------
+
+buildMuzzleFlash = function buildMuzzleFlash() {
+  const group = new THREE.Group();
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffd9a0,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  // a short cone of burning gas plus a cross-shaped star
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 10, 1, true), material);
+  cone.rotation.x = -Math.PI / 2;
+  cone.position.z = -0.07;
+  group.add(cone);
+  for (let i = 0; i < 2; i += 1) {
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.22), material);
+    plane.rotation.z = i * Math.PI * 0.5;
+    group.add(plane);
+  }
+  group.traverse((o) => { o.frustumCulled = false; o.userData.noGBuffer = true; });
+  group.visible = false;
+  return { group, material };
+}
+
+// --- ejected shells ---------------------------------------------------------
+
+ShellPool = class ShellPool {
+  constructor(scene) {
+    this.scene = scene;
+    this.live = [];
+    const m = materials();
+    this.geometry = new THREE.CylinderGeometry(0.009, 0.009, 0.032, 8);
+    this.brass = m.brass;
+    this.red = pbr(0x7a1c14, 0.55, 0.1);
+  }
+
+  /** @param {'revolver'|'shotgun'} kind */
+  spawn(kind, position, velocity) {
+    const mesh = new THREE.Mesh(this.geometry, kind === 'shotgun' ? this.red : this.brass);
+    mesh.position.copy(position);
+    mesh.scale.set(1, kind === 'shotgun' ? 2.0 : 1, 1);
+    mesh.userData.noGBuffer = true;
+    mesh.castShadow = false;
+    this.scene.add(mesh);
+    this.live.push({
+      mesh,
+      velocity: velocity.clone(),
+      spin: new THREE.Vector3(
+        (Math.random() - 0.5) * 22,
+        (Math.random() - 0.5) * 22,
+        (Math.random() - 0.5) * 22
+      ),
+      life: 3.2,
+      bounced: 0,
+    });
+    if (this.live.length > 24) this.#retire(0);
+  }
+
+  #retire(index) {
+    const shell = this.live[index];
+    this.scene.remove(shell.mesh);
+    this.live.splice(index, 1);
+  }
+
+  update(dt, floorY = 0.02) {
+    for (let i = this.live.length - 1; i >= 0; i -= 1) {
+      const s = this.live[i];
+      s.life -= dt;
+      s.velocity.y -= 9.8 * dt;
+      s.mesh.position.addScaledVector(s.velocity, dt);
+      s.mesh.rotation.x += s.spin.x * dt;
+      s.mesh.rotation.y += s.spin.y * dt;
+      s.mesh.rotation.z += s.spin.z * dt;
+      if (s.mesh.position.y < floorY && s.velocity.y < 0) {
+        s.mesh.position.y = floorY;
+        s.velocity.y *= -0.32;
+        s.velocity.x *= 0.6;
+        s.velocity.z *= 0.6;
+        s.spin.multiplyScalar(0.5);
+        s.bounced += 1;
+        if (s.bounced > 3) s.velocity.set(0, 0, 0);
+      }
+      if (s.life <= 0) this.#retire(i);
+    }
+  }
+
+  clear() {
+    while (this.live.length) this.#retire(0);
+  }
+}
+
 }
 
 
 /* ===== src/game/environment.js ===== */
+var Environment;
+{
 
 
 // ---------------------------------------------------------------------------
@@ -57754,7 +58725,7 @@ function skyDome(topColor, bottomColor, moonDir) {
   return mesh;
 }
 
-class Environment {
+Environment = class Environment {
   constructor(scene, config, audio) {
     this.scene = scene;
     this.config = config || {};
@@ -57826,11 +58797,11 @@ class Environment {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const material = new THREE.PointsMaterial({
-      color: 0xd8cdb8,
-      size: 0.035,
+      color: 0xbfb49e,
+      size: 0.013,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.30,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
@@ -58003,8 +58974,12 @@ class Environment {
   }
 }
 
+}
+
 
 /* ===== src/game/levels.js ===== */
+var LEVELS, levelByIndex;
+{
 // ---------------------------------------------------------------------------
 // Level blueprints.
 //
@@ -58097,6 +59072,10 @@ const CH1 = {
   environment: { sky: true, rain: 1.0, lightning: true, skyTop: 0x0d1a2e, skyBottom: 0x04060b, moonDir: [-0.5, 0.72, 0.42] },
   wallHeight: 4.6,
   ceiling: false,
+  windows: false,
+  sconceColor: 0x9fc4ff,
+  sconceSpacing: 7,
+  sconceLimit: 12,
   defaultFloor: 'grass',
   wallMaterial: 'wallStone',
   fog: { color: 0x121a26, density: 0.016 },
@@ -58258,6 +59237,9 @@ const CH3 = {
   wallHeight: 3.6,
   defaultFloor: 'concrete',
   wallMaterial: 'wallStone',
+  trimMaterial: 'stoneTrim',
+  sconceColor: 0x8fc0d8,
+  windows: false,
   ceilingMaterial: 'concrete',
   fog: { color: 0x0b1114, density: 0.023 },
   exposure: 1.25,
@@ -58335,6 +59317,9 @@ const CH4 = {
   defaultFloor: 'tile',
   wallMaterial: 'wallStone',
   ceilingMaterial: 'wallStone',
+  trimMaterial: 'stoneTrim',
+  sconceSpacing: 6,
+  windows: false,
   fog: { color: 0x120d0f, density: 0.021 },
   exposure: 1.15,
   ambientLight: { color: 0x8a6062, intensity: 1.8 },
@@ -58398,6 +59383,9 @@ const CH5 = {
   defaultFloor: 'tile',
   wallMaterial: 'wallStone',
   ceilingMaterial: 'wallStone',
+  trimMaterial: 'stoneTrim',
+  sconceColor: 0xff7a3a,
+  windows: false,
   fog: { color: 0x241008, density: 0.024 },
   exposure: 1.3,
   ambientLight: { color: 0xa85c30, intensity: 2.2 },
@@ -58436,21 +59424,25 @@ const CH5 = {
   enemies: [],
 };
 
-const LEVELS = [CH1, CH2, CH3, CH4, CH5];
+LEVELS = [CH1, CH2, CH3, CH4, CH5];
 
-function levelByIndex(index) {
+levelByIndex = function levelByIndex(index) {
   return LEVELS[Math.max(0, Math.min(LEVELS.length - 1, index))];
+}
+
 }
 
 
 /* ===== src/game/player.js ===== */
+var Player;
+{
 
 
 
 const EYE_HEIGHT = 1.68;
 const RADIUS = 0.42;
 
-class Player {
+Player = class Player {
   constructor(camera, audio) {
     this.camera = camera;
     this.audio = audio;
@@ -58556,7 +59548,7 @@ class Player {
   }
 
   update(dt, input, level, opts = {}) {
-    const look = input.consumeLook();
+    const look = input.consumeLook(dt);
     this.yaw -= look.dx;
     this.pitch = Math.max(-1.35, Math.min(1.35, this.pitch - look.dy));
 
@@ -58677,15 +59669,20 @@ class Player {
   }
 }
 
+}
+
 
 /* ===== src/game/weapons.js ===== */
+var WEAPON_DEFS, Weapons;
+{
+
 
 
 // ---------------------------------------------------------------------------
 // View-model weapons. Everything is procedural geometry parented to the camera.
 // ---------------------------------------------------------------------------
 
-const WEAPON_DEFS = {
+WEAPON_DEFS = {
   hands: { name: 'يدان فارغتان', kind: 'none' },
   axe: {
     name: 'فأس الحطب', kind: 'melee', damage: 55, rate: 0.72, reach: 2.4, arc: 0.8,
@@ -58700,71 +59697,59 @@ const WEAPON_DEFS = {
   },
 };
 
-function metalMat(color, rough = 0.35) {
-  const m = new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0.9 });
-  m.userData.reflectivity = 0.5;
-  return m;
-}
-
-function buildViewModel(id) {
-  const g = new THREE.Group();
-  const steel = metalMat(0x3d4148, 0.32);
-  const dark = metalMat(0x1c1e22, 0.55);
-  const wood = new THREE.MeshStandardMaterial({ color: 0x5a3b24, roughness: 0.72 });
-
-  const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x, y, z);
-    mesh.rotation.set(rx, ry, rz);
-    mesh.castShadow = false;
-    mesh.receiveShadow = false;
-    mesh.userData.noGBuffer = true;
-    g.add(mesh);
-    return mesh;
-  };
-
-  if (id === 'revolver') {
-    add(new THREE.BoxGeometry(0.045, 0.045, 0.3), steel, 0, 0.01, -0.2);
-    add(new THREE.CylinderGeometry(0.045, 0.045, 0.09, 10), steel, 0, 0.005, -0.11, Math.PI / 2);
-    add(new THREE.BoxGeometry(0.04, 0.13, 0.05), wood, 0, -0.08, -0.02, 0.32);
-    add(new THREE.BoxGeometry(0.02, 0.03, 0.03), dark, 0, -0.02, -0.06);
-  } else if (id === 'shotgun') {
-    add(new THREE.CylinderGeometry(0.028, 0.028, 0.62, 10), steel, 0.012, 0.005, -0.3, Math.PI / 2);
-    add(new THREE.CylinderGeometry(0.028, 0.028, 0.62, 10), steel, -0.012, 0.005, -0.3, Math.PI / 2);
-    add(new THREE.BoxGeometry(0.07, 0.06, 0.26), wood, 0, -0.015, -0.02);
-    add(new THREE.BoxGeometry(0.055, 0.11, 0.16), wood, 0, -0.07, 0.09, 0.22);
-    add(new THREE.BoxGeometry(0.07, 0.05, 0.14), dark, 0, -0.03, -0.24);
-  } else if (id === 'axe') {
-    add(new THREE.CylinderGeometry(0.022, 0.026, 0.6, 8), wood, 0, -0.05, -0.18, Math.PI / 2.6);
-    add(new THREE.BoxGeometry(0.03, 0.16, 0.2), steel, 0.01, 0.16, -0.42);
-    add(new THREE.BoxGeometry(0.035, 0.06, 0.06), dark, 0.01, 0.16, -0.3);
-  } else {
-    add(new THREE.BoxGeometry(0.05, 0.05, 0.16), dark, 0, -0.01, -0.14);
-  }
-
-  g.traverse((o) => { o.frustumCulled = false; });
-  return g;
-}
-
-class Weapons {
+Weapons = class Weapons {
   constructor(camera, audio) {
     this.camera = camera;
     this.audio = audio;
     this.root = new THREE.Group();
-    this.root.position.set(0.19, -0.19, -0.02);
+    // Held far enough forward that the whole weapon sits inside the 62° view
+    // lens — at the old near-plane distance most of it fell outside the frame.
+    this.root.position.set(0.16, -0.14, -0.30);
+    this.root.scale.setScalar(0.92);
     camera.add(this.root);
 
+    // Layer 1 is the view-model layer: rendered in a second pass with a
+    // narrower lens and a cleared depth buffer, so the gun never distorts at
+    // the frame edge and never clips through a wall.
+    this.LAYER = 1;
+
+    // Art-directed lighting that belongs to the gun, not to the room — this is
+    // why a view model reads the same in every level.
+    this.keyLight = new THREE.DirectionalLight(0xfff0dc, 5.5);
+    this.keyLight.position.set(-0.6, 1.0, 0.7);
+    this.keyLight.layers.set(this.LAYER);
+    camera.add(this.keyLight);
+    camera.add(this.keyLight.target);
+    this.rimLight = new THREE.DirectionalLight(0x8fb4e0, 3.4);
+    this.rimLight.position.set(0.9, 0.2, -0.9);
+    this.rimLight.layers.set(this.LAYER);
+    camera.add(this.rimLight);
+    camera.add(this.rimLight.target);
+    this.fillLight = new THREE.AmbientLight(0x5d6a80, 2.6);
+    this.fillLight.layers.set(this.LAYER);
+    camera.add(this.fillLight);
+
     this.models = {};
+    this.rigs = {};
     Object.keys(WEAPON_DEFS).forEach((id) => {
-      const model = buildViewModel(id);
-      model.visible = false;
-      this.root.add(model);
-      this.models[id] = model;
+      const rig = buildViewModel(id);
+      rig.root.visible = false;
+      this.root.add(rig.root);
+      this.models[id] = rig.root;
+      this.rigs[id] = rig;
     });
 
-    this.muzzle = new THREE.PointLight(0xffd08a, 0, 9, 2);
-    this.muzzle.position.set(0, 0.02, -0.5);
+    this.muzzle = new THREE.PointLight(0xffd08a, 0, 9, 1.4);
     this.root.add(this.muzzle);
+    this.flash = buildMuzzleFlash();
+    this.root.add(this.flash.group);
+    this.shells = null;          // bound per chapter by the game
+    this.root.traverse((o) => o.layers.set(this.LAYER));
+    this.muzzle.layers.set(this.LAYER);
+    this.flashTimer = 0;
+    this.ejectQueue = [];
+    this.cylinderSpin = 0;
+    this.breakOpen = 0;
 
     this.owned = new Set(['hands']);
     this.ammo = { revolver: 0, shotgun: 0 };
@@ -58805,6 +59790,7 @@ class Weapons {
   setWeapon(id) {
     if (!this.owned.has(id)) return false;
     this.current = id;
+    this.root.traverse((o) => o.layers.set(this.LAYER));
     Object.entries(this.models).forEach(([key, model]) => { model.visible = key === id; });
     this.reloading = 0;
     this.cooldown = 0.25;
@@ -58897,7 +59883,18 @@ class Weapons {
     this.cooldown = def.rate;
     this.kick = 1;
     this.audio?.gunshot(def.sound);
-    this.muzzle.intensity = 14;
+
+    // muzzle flash: light + geometry, both alive for ~50 ms
+    const rig = this.rigs[this.current];
+    this.muzzle.position.set(...rig.muzzle);
+    this.muzzle.intensity = def.sound === 'shotgun' ? 26 : 16;
+    this.flash.group.position.set(...rig.muzzle);
+    this.flash.group.rotation.z = Math.random() * Math.PI;
+    this.flash.group.scale.setScalar(def.sound === 'shotgun' ? 1.35 : 1);
+    this.flash.group.visible = true;
+    this.flash.material.opacity = 0.95;
+    this.flashTimer = 0.055;
+    if (this.current === 'revolver') this.cylinderSpin -= Math.PI / 3;
     player.recoil.y += def.recoil;
     player.recoil.x += (Math.random() - 0.5) * def.recoil * 0.6;
     if (this.onShoot) this.onShoot(def);
@@ -58922,12 +59919,52 @@ class Weapons {
     this.audio?.impact(false);
   }
 
+  /**
+   * Queues a case to be thrown clear. Timing runs off the game clock, not
+   * setTimeout, so it stays in step with slow motion and never fires into a
+   * chapter that has already been unloaded.
+   */
+  #eject(kind, delay = 0) {
+    if (!this.shells) return;
+    this.ejectQueue.push({ kind, delay, from: this.current });
+  }
+
+  #spawnShell(kind, weapon) {
+    const rig = this.rigs[weapon] || this.rigs[this.current];
+    if (!rig || !this.shells) return;
+    const origin = new THREE.Vector3(...rig.eject);
+    this.root.localToWorld(origin);
+    const quat = this.camera.getWorldQuaternion(new THREE.Quaternion());
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(quat);
+    const velocity = right.multiplyScalar(1.7 + Math.random() * 0.9)
+      .addScaledVector(new THREE.Vector3(0, 1, 0), 1.4 + Math.random() * 0.8);
+    this.shells.spawn(kind, origin, velocity);
+  }
+
+  #drainEjectQueue(dt) {
+    for (let i = this.ejectQueue.length - 1; i >= 0; i -= 1) {
+      const e = this.ejectQueue[i];
+      e.delay -= dt;
+      if (e.delay <= 0) {
+        this.#spawnShell(e.kind, e.from);
+        this.ejectQueue.splice(i, 1);
+      }
+    }
+  }
+
   update(dt, input, ctx) {
     this.cooldown = Math.max(0, this.cooldown - dt);
     this.swingTimer = Math.max(0, this.swingTimer - dt);
-    this.muzzle.intensity *= Math.max(0, 1 - dt * 16);
+    this.muzzle.intensity *= Math.max(0, 1 - dt * 22);
     this.kick = Math.max(0, this.kick - dt * 5);
 
+    if (this.flashTimer > 0) {
+      this.flashTimer -= dt;
+      this.flash.material.opacity = Math.max(0, this.flashTimer / 0.055) * 0.95;
+      if (this.flashTimer <= 0) this.flash.group.visible = false;
+    }
+
+    const wasReloading = this.reloading > 0;
     if (this.reloading > 0) {
       this.reloading -= dt;
       if (this.reloading <= 0) {
@@ -58935,6 +59972,10 @@ class Weapons {
         this.reloadNow(this.current);
       }
     }
+
+    this.#animateMechanism(dt, wasReloading);
+    this.#drainEjectQueue(dt);
+    this.shells?.update(dt);
 
     if (ctx.canAct) {
       if (input.tapped('KeyR')) this.startReload();
@@ -58948,29 +59989,108 @@ class Weapons {
     }
 
     // sway + aim-down feel
-    const targetSway = new THREE.Vector2(
+    const targetSway2 = new THREE.Vector2(
       THREE.MathUtils.clamp(-input.mouse.dx * 0.0012, -0.05, 0.05),
       THREE.MathUtils.clamp(input.mouse.dy * 0.0012, -0.05, 0.05)
     );
-    this.swayOffset.lerp(targetSway, Math.min(1, dt * 6));
+    this.swayOffset.lerp(targetSway2, Math.min(1, dt * 6));
 
     const player = ctx.player;
+    const def = this.def;
     const bob = Math.sin(player.stepPhase * 2.4) * 0.014;
     const bobY = Math.abs(Math.cos(player.stepPhase * 2.4)) * 0.012;
-    const aiming = ctx.canAct && input.mouse.right && this.def.kind === 'gun';
-    const restX = aiming ? 0.0 : 0.19;
-    const restY = aiming ? -0.115 : -0.19;
+    const aiming = ctx.canAct && input.mouse.right && def.kind === 'gun' && this.reloading <= 0;
+    this.aiming = aiming;
 
-    this.root.position.x += (restX + this.swayOffset.x + bob - this.root.position.x) * Math.min(1, dt * 9);
-    this.root.position.y += (restY + this.swayOffset.y - bobY - this.root.position.y) * Math.min(1, dt * 9);
-    this.root.position.z += ((this.reloading > 0 ? 0.12 : -0.02) + this.kick * 0.08 - this.root.position.z) * Math.min(1, dt * 10);
-    this.root.rotation.x = this.kick * -0.28 + (this.reloading > 0 ? 0.5 : 0) + this.swingTimer * 1.6;
-    this.root.rotation.z = this.swayOffset.x * 2.5 + (this.reloading > 0 ? 0.4 : 0);
+    // Aiming lines the sights up on the screen centre; the hip pose sits low
+    // and to the right the way a held gun actually rides.
+    // Aiming puts the sight line dead centre: the revolver's blade and notch
+    // both sit at y≈+0.048 local, the shotgun's rib and bead at y≈+0.016.
+    const ADS = {
+      revolver: { x: 0, y: -0.048, z: -0.26 },
+      shotgun: { x: 0, y: -0.018, z: -0.14 },
+      axe: { x: 0.10, y: -0.12, z: -0.26 },
+    };
+    const HIP = {
+      revolver: { x: 0.16, y: -0.14, z: -0.30 },
+      shotgun: { x: 0.15, y: -0.16, z: -0.20 },
+      axe: { x: 0.19, y: -0.17, z: -0.24 },
+      hands: { x: 0.17, y: -0.15, z: -0.28 },
+    };
+    const target = aiming ? (ADS[this.current] || { x: 0, y: -0.05, z: -0.26 })
+      : (HIP[this.current] || HIP.hands);
+    const speed = aiming ? 13 : 9;
+
+    const reloadDip = this.reloading > 0 ? 0.10 : 0;
+    this.root.position.x += (target.x + this.swayOffset.x * (aiming ? 0.3 : 1) + bob * (aiming ? 0.25 : 1) - this.root.position.x) * Math.min(1, dt * speed);
+    this.root.position.y += (target.y + this.swayOffset.y * (aiming ? 0.3 : 1) - bobY * (aiming ? 0.3 : 1) - reloadDip - this.root.position.y) * Math.min(1, dt * speed);
+    this.root.position.z += (target.z + this.kick * 0.055 - this.root.position.z) * Math.min(1, dt * 11);
+
+    // recoil: a sharp muzzle rise that settles, not a linear fade
+    const rise = this.kick * this.kick;
+    this.root.rotation.x = -rise * 0.30 + this.swingTimer * 1.7 + (this.reloading > 0 ? 0.35 : 0);
+    this.root.rotation.z = this.swayOffset.x * (aiming ? 0.8 : 2.5) + (this.reloading > 0 ? 0.30 : 0);
+    this.root.rotation.y = this.swayOffset.y * (aiming ? 0.2 : 0.8);
   }
+
+  /**
+   * Drives the moving parts: the revolver's cylinder and hammer, and the
+   * shotgun breaking open to dump its shells halfway through a reload.
+   */
+  #animateMechanism(dt, wasReloading) {
+    const rig = this.rigs[this.current];
+    if (!rig) return;
+    const parts = rig.parts;
+    const def = this.def;
+
+    if (this.current === 'revolver') {
+      // the cylinder indexes one chamber per shot and free-spins on reload
+      if (this.reloading > 0) this.cylinderSpin -= dt * 9;
+      // brass hits the floor when the cylinder is swung out, all at once
+      if (wasReloading && this.reloading <= def.reload * 0.55 && !this._dumped) {
+        this._dumped = true;
+        const spent = def.clip - (this.ammo.revolver || 0);
+        for (let i = 0; i < spent; i += 1) this.#eject('revolver', i * 0.045);
+      }
+      if (this.reloading <= 0 && this.cooldown <= 0) this._dumped = false;
+      if (parts.cylinder) {
+        parts.cylinder.rotation.z += (this.cylinderSpin - parts.cylinder.rotation.z) * Math.min(1, dt * 14);
+      }
+      if (parts.hammer) {
+        // cocked while the trigger is at rest, dropped the instant it fires
+        const cocked = this.cooldown > def.rate * 0.55 ? 0 : -0.55;
+        parts.hammer.rotation.x += (cocked - parts.hammer.rotation.x) * Math.min(1, dt * 18);
+      }
+      if (parts.trigger) {
+        const pulled = this.cooldown > def.rate * 0.6 ? -0.35 : 0;
+        parts.trigger.rotation.x += (pulled - parts.trigger.rotation.x) * Math.min(1, dt * 20);
+      }
+    }
+
+    if (this.current === 'shotgun') {
+      // open for the first 60% of the reload, then snap shut
+      const openTarget = this.reloading > def.reload * 0.4 ? 1 : 0;
+      this.breakOpen += (openTarget - this.breakOpen) * Math.min(1, dt * 9);
+      if (parts.barrels) parts.barrels.rotation.x = this.breakOpen * 0.42;
+      if (parts.lever) parts.lever.rotation.y = this.breakOpen * 0.8;
+      // eject both hulls right as it swings open
+      if (wasReloading && this.breakOpen > 0.75 && !this._dumped) {
+        this._dumped = true;
+        this.#eject('shotgun');
+        this.#eject('shotgun', 0.08);
+      }
+      if (this.reloading <= 0) this._dumped = false;
+    }
+  }
+}
+
 }
 
 
 /* ===== src/game/enemies.js ===== */
+var Actor, Enemy, PlayerAvatar, Companion;
+{
+
 
 
 // ---------------------------------------------------------------------------
@@ -58978,71 +60098,9 @@ class Weapons {
 // All bodies are built from boxes and animated procedurally.
 // ---------------------------------------------------------------------------
 
-function limb(w, h, d, material) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
+// Bodies come from characters.js; Actor only drives them.
 
-function buildBody(palette, scale = 1, gaunt = 1) {
-  const root = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.82 });
-  const cloth = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.95 });
-  skin.userData.reflectivity = 0.08;
-  cloth.userData.reflectivity = 0.03;
-
-  const hips = new THREE.Group();
-  hips.position.y = 0.92 * scale;
-  root.add(hips);
-
-  const torso = limb(0.46 * scale / gaunt, 0.68 * scale, 0.26 * scale / gaunt, cloth);
-  torso.position.y = 0.3 * scale;
-  hips.add(torso);
-
-  const neck = new THREE.Group();
-  neck.position.y = 0.66 * scale;
-  hips.add(neck);
-  const head = limb(0.24 * scale, 0.3 * scale, 0.24 * scale, skin);
-  head.position.y = 0.16 * scale;
-  neck.add(head);
-
-  const arms = [];
-  const legs = [];
-  [-1, 1].forEach((side) => {
-    const shoulder = new THREE.Group();
-    shoulder.position.set(side * 0.28 * scale / gaunt, 0.56 * scale, 0);
-    hips.add(shoulder);
-    const upper = limb(0.12 * scale, 0.36 * scale, 0.12 * scale, skin);
-    upper.position.y = -0.18 * scale;
-    shoulder.add(upper);
-    const elbow = new THREE.Group();
-    elbow.position.y = -0.36 * scale;
-    shoulder.add(elbow);
-    const lower = limb(0.1 * scale, 0.34 * scale, 0.1 * scale, skin);
-    lower.position.y = -0.17 * scale;
-    elbow.add(lower);
-    arms.push({ shoulder, elbow, side });
-
-    const hip = new THREE.Group();
-    hip.position.set(side * 0.14 * scale, 0, 0);
-    hips.add(hip);
-    const thigh = limb(0.15 * scale, 0.44 * scale, 0.15 * scale, cloth);
-    thigh.position.y = -0.22 * scale;
-    hip.add(thigh);
-    const knee = new THREE.Group();
-    knee.position.y = -0.44 * scale;
-    hip.add(knee);
-    const shin = limb(0.13 * scale, 0.42 * scale, 0.13 * scale, cloth);
-    shin.position.y = -0.21 * scale;
-    knee.add(shin);
-    legs.push({ hip, knee, side });
-  });
-
-  return { root, hips, neck, head, arms, legs, materials: { skin, cloth } };
-}
-
-class Actor {
+Actor = class Actor {
   constructor(level, position, opts = {}) {
     this.level = level;
     this.position = position.clone();
@@ -59063,9 +60121,13 @@ class Actor {
     this.stagger = 0;
     this.deadTimer = 0;
 
-    this.body = buildBody(opts.palette || { skin: 0x8f7f70, cloth: 0x2b2b31 }, opts.scale ?? 1, opts.gaunt ?? 1);
+    this.body = buildCharacter(opts.kind || 'karim');
+    this.body.materials.skinRef = this.body.materials.skin;
     this.mesh = this.body.root;
     this.mesh.position.copy(this.position);
+    this.blinkTimer = 1 + Math.random() * 4;
+    this.blink = 0;
+    this.jawOpen = 0;
   }
 
   addTo(scene) { scene.add(this.mesh); }
@@ -59121,7 +60183,32 @@ class Actor {
     return this.distanceTo(target);
   }
 
+  /** Blinks, and lets the jaw hang open while something is being said. */
+  animateFace(dt) {
+    const face = this.body.face;
+    if (!face) return;
+    this.blinkTimer -= dt;
+    if (this.blinkTimer <= 0) {
+      this.blinkTimer = 2.2 + Math.random() * 4.5;
+      this.blink = 1;
+    }
+    this.blink = Math.max(0, this.blink - dt * 7);
+    if (face.lids) {
+      const closed = Math.sin(Math.min(1, this.blink) * Math.PI);
+      face.lids.forEach((lid) => { lid.position.y = lid.userData.rest ??= lid.position.y; });
+      face.lids.forEach((lid) => {
+        lid.scale.y = 0.6 + closed * 1.6;
+        lid.position.y = (lid.userData.rest || 0) * (1 - closed * 0.9);
+      });
+    }
+    if (face.jaw) {
+      face.jaw.rotation.x += (this.jawOpen * 0.42 - face.jaw.rotation.x) * Math.min(1, dt * 12);
+    }
+    this.jawOpen = Math.max(0, this.jawOpen - dt * 2.2);
+  }
+
   animate(dt, moving) {
+    this.animateFace(dt);
     this.animTime += dt * (moving ? 8 : 1.4);
     const swing = Math.sin(this.animTime) * (moving ? 0.9 : 0.09);
     const counter = Math.sin(this.animTime + Math.PI) * (moving ? 0.9 : 0.09);
@@ -59131,6 +60218,8 @@ class Actor {
     this.body.legs[1].knee.rotation.x = Math.max(0, -counter) * 0.7;
     this.body.arms[0].shoulder.rotation.x = counter * 0.5 + this.armPose;
     this.body.arms[1].shoulder.rotation.x = swing * 0.5 + this.armPose;
+    this.body.arms[0].elbow.rotation.x = -Math.abs(counter) * 0.35 - 0.12;
+    this.body.arms[1].elbow.rotation.x = -Math.abs(swing) * 0.35 - 0.12;
     this.body.hips.position.y = this.hipHeight + Math.abs(Math.sin(this.animTime)) * (moving ? 0.05 : 0.01);
     this.body.neck.rotation.z = Math.sin(this.animTime * 0.4) * 0.06;
   }
@@ -59173,16 +60262,16 @@ class Actor {
 
 // --- hostile ---------------------------------------------------------------
 
-class Enemy extends Actor {
+Enemy = class Enemy extends Actor {
   constructor(level, position, type, audio) {
     const presets = {
       crawler: {
-        radius: 0.38, height: 1.6, speed: 3.35, health: 58, scale: 0.92, gaunt: 1.35,
-        palette: { skin: 0x9a8a7c, cloth: 0x23202a }, damage: 14, attackRate: 1.05, sight: 22,
+        radius: 0.38, height: 1.6, speed: 3.35, health: 58, kind: 'crawler',
+        damage: 14, attackRate: 1.05, sight: 22,
       },
       stalker: {
-        radius: 0.46, height: 2.1, speed: 2.5, health: 135, scale: 1.18, gaunt: 1.1,
-        palette: { skin: 0x6f5f56, cloth: 0x161820 }, damage: 26, attackRate: 1.6, sight: 26,
+        radius: 0.46, height: 2.1, speed: 2.5, health: 135, kind: 'stalker',
+        damage: 26, attackRate: 1.6, sight: 26,
       },
     };
     const preset = presets[type] || presets.crawler;
@@ -59313,11 +60402,10 @@ class Enemy extends Actor {
 
 // --- the player's own body, used only by the camera during cutscenes --------
 
-class PlayerAvatar extends Actor {
+PlayerAvatar = class PlayerAvatar extends Actor {
   constructor(level, position) {
     super(level, position, {
-      radius: 0.4, height: 1.78, speed: 3, health: 9999, scale: 1.02,
-      palette: { skin: 0xb08a6a, cloth: 0x2f3742 },
+      radius: 0.4, height: 1.78, speed: 3, health: 9999, kind: 'karim',
     });
     this.mesh.visible = false;
     this.pose = 'stand';
@@ -59383,16 +60471,15 @@ class PlayerAvatar extends Actor {
 
 // --- companion --------------------------------------------------------------
 
-class Companion extends Actor {
+Companion = class Companion extends Actor {
   constructor(level, position) {
     super(level, position, {
-      radius: 0.3, height: 1.25, speed: 3.1, health: 9999, scale: 0.66,
-      palette: { skin: 0xd8b49a, cloth: 0x7a3550 },
+      radius: 0.3, height: 1.25, speed: 3.1, health: 9999, kind: 'layla',
     });
     this.followDistance = 2.4;
     this.mode = 'follow';
     this.scared = 0;
-    this.glow = new THREE.PointLight(0xffc9a8, 2.2, 5.5, 2);
+    this.glow = new THREE.PointLight(0xffc0a0, 4.5, 4.2, 1.7);
     this.glow.position.set(0, 1.1, 0);
     this.mesh.add(this.glow);
   }
@@ -59422,7 +60509,7 @@ class Companion extends Actor {
     }
 
     this.scared = THREE.MathUtils.clamp(this.scared + ((threat ? 1 : -0.5) * dt), 0, 1);
-    this.glow.intensity = 1.4 + Math.sin(performance.now() * 0.004) * 0.3;
+    this.glow.intensity = 4.0 + Math.sin(performance.now() * 0.004) * 0.6;
     this.animate(dt, moving);
     if (this.scared > 0.3) {
       this.body.arms.forEach((a) => { a.shoulder.rotation.x = -1.1; a.elbow.rotation.x = -1.2; });
@@ -59431,8 +60518,12 @@ class Companion extends Actor {
   }
 }
 
+}
+
 
 /* ===== src/game/boss.js ===== */
+var Boss;
+{
 
 
 
@@ -59443,16 +60534,14 @@ class Companion extends Actor {
 //   3) desperation : slams, summons, and moves faster than you can walk
 // ---------------------------------------------------------------------------
 
-class Boss extends Actor {
+Boss = class Boss extends Actor {
   constructor(level, position, audio) {
     super(level, position, {
       radius: 0.62,
       height: 2.6,
       speed: 2.9,
       health: 900,
-      scale: 1.45,
-      gaunt: 0.85,
-      palette: { skin: 0x74616a, cloth: 0x120d14 },
+      kind: 'shepherd',
     });
 
     this.audio = audio;
@@ -59467,28 +60556,20 @@ class Boss extends Actor {
     this.laughTimer = 6;
     this.damageMul = 1;
 
-    const maskMat = new THREE.MeshStandardMaterial({ color: 0xd9cdb4, roughness: 0.55 });
-    maskMat.userData.reflectivity = 0.2;
-    const mask = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.36, 0.06), maskMat);
-    mask.position.set(0, 0.24, 0.19);
-    mask.castShadow = true;
-    this.body.neck.add(mask);
-
-    const eyeMat = new THREE.MeshStandardMaterial({
-      color: 0x000000, emissive: 0xff2a1a, emissiveIntensity: 3, roughness: 1,
-    });
-    [-0.08, 0.08].forEach((x) => {
-      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.03), eyeMat);
-      eye.position.set(x, 0.3, 0.23);
-      this.body.neck.add(eye);
-    });
-    this.eyeMat = eyeMat;
+    // the leather mask and burning eyes are part of the shepherd rig
+    this.eyeMat = this.body.face.eyeGlow || new THREE.MeshStandardMaterial();
 
     const coatMat = new THREE.MeshStandardMaterial({ color: 0x0d0a10, roughness: 1 });
-    const coat = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.5, 0.5), coatMat);
-    coat.position.set(0, -0.2, 0);
+    const coat = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.75, 0.62), coatMat);
+    coat.position.set(0, -0.55, 0);
     coat.castShadow = true;
     this.body.hips.add(coat);
+    // a hood collar that hides where the mask meets the head
+    const hood = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 10), coatMat);
+    hood.position.set(0, 0.05, -0.06);
+    hood.scale.set(1.15, 0.9, 1.15);
+    hood.castShadow = true;
+    this.body.neck.add(hood);
 
     const steel = new THREE.MeshStandardMaterial({ color: 0x585c63, roughness: 0.3, metalness: 1 });
     steel.userData.reflectivity = 0.65;
@@ -59498,7 +60579,7 @@ class Boss extends Actor {
     hook.castShadow = true;
     this.body.arms[1].elbow.add(hook);
 
-    this.aura = new THREE.PointLight(0xff3018, 6, 12, 2);
+    this.aura = new THREE.PointLight(0xff3018, 2.6, 5.5, 2);
     this.aura.position.set(0, 1.6, 0);
     this.mesh.add(this.aura);
   }
@@ -59525,7 +60606,7 @@ class Boss extends Actor {
     this.invuln = true;
     this.speed = phase === 3 ? 4.4 : phase === 2 ? 3.4 : 2.9;
     this.damageMul = phase === 3 ? 1.5 : phase === 2 ? 1.2 : 1;
-    this.aura.intensity = 6 + phase * 4;
+    this.aura.intensity = 2.6 + phase * 1.1;
     this.eyeMat.emissiveIntensity = 3 + phase * 2;
     this.audio?.stinger('rage');
     if (this.onPhase) this.onPhase(phase);
@@ -59700,7 +60781,7 @@ class Boss extends Actor {
       }
     }
 
-    this.aura.intensity = (6 + this.phase * 4) * (0.8 + Math.sin(performance.now() * 0.006) * 0.2);
+    this.aura.intensity = (2.6 + this.phase * 1.1) * (0.8 + Math.sin(performance.now() * 0.006) * 0.2);
     this.syncMesh();
   }
 
@@ -59710,15 +60791,19 @@ class Boss extends Actor {
   }
 }
 
+}
+
 
 /* ===== src/game/hud.js ===== */
+var HUD;
+{
 // ---------------------------------------------------------------------------
 // DOM heads-up display. Kept out of WebGL so text stays crisp and RTL-correct.
 // ---------------------------------------------------------------------------
 
 const el = (id) => document.getElementById(id);
 
-class HUD {
+HUD = class HUD {
   constructor() {
     this.root = el('hud');
     this.healthFill = el('healthFill');
@@ -59855,8 +60940,12 @@ class HUD {
   }
 }
 
+}
+
 
 /* ===== src/game/story.js ===== */
+var STORY, ENDING_LINES, LAUGH_LINES;
+{
 // ---------------------------------------------------------------------------
 // السيناريو — story, direction and cutscenes.
 //
@@ -59870,7 +60959,7 @@ const L = (text, emo = 'calm', hold) => ({ who: 'layla', text, emo, hold });
 const S = (text, emo = 'cold', hold) => ({ who: 'shepherd', text, emo, hold });
 const N = (text, emo = 'soft', hold) => ({ who: 'narrator', text, emo, hold });
 
-const STORY = {
+STORY = {
   // -------------------------------------------------------------------------
   road: {
     ambient: [
@@ -60357,22 +61446,27 @@ const STORY = {
   },
 };
 
-const ENDING_LINES = [
+ENDING_LINES = [
   N('خرج كريم من البيت عند الفجر، وابنته بين ذراعيه.', 'soft'),
   N('لم يخبر أحداً بما رآه. ولم يعد أحدٌ يسمع صوت ضحكٍ في ذلك الطريق.', 'soft'),
   N('لكن في كل ليلة مطر… يقف على الطريق، وينتظر أن يضيع أحدهم.', 'cold'),
   K('ليلى… انتهى الأمر. نامي الآن.', 'cry'),
 ];
 
-const LAUGH_LINES = [
+LAUGH_LINES = [
   'هههههههه.',
   'ما زلتَ حيّاً؟ كم هذا مؤسف.',
   'اركض. الركض يجعل الأمر أطول.',
   'هل تسمع؟ إنها تناديك.',
 ];
 
+}
+
 
 /* ===== src/game/game.js ===== */
+var Game;
+{
+
 
 
 
@@ -60396,7 +61490,7 @@ const LAUGH_LINES = [
 const SAVE_KEY = 'bayt.almahjur.save';
 const SETTINGS_KEY = 'bayt.almahjur.settings';
 
-class Game {
+Game = class Game {
   constructor(canvas) {
     this.canvas = canvas;
     this.textures = buildTextureLibrary();
@@ -60454,7 +61548,7 @@ class Game {
 
     this.settings = {
       quality: 'high',
-      sensitivity: 1,
+      sensitivity: 1.3,
       invertY: false,
       master: 0.85,
       music: 0.7,
@@ -60563,6 +61657,16 @@ class Game {
     this.level = new Level(this.chapter, this.textures);
     scene.add(this.level.group);
 
+    // A probe built from the chapter's own palette, so metals reflect the room
+    // they are standing in rather than a generic studio.
+    const env = this.chapter.env || {};
+    scene.environment = this.rt.buildEnvironment(
+      env.top ?? this.chapter.environment?.skyTop ?? 0x1a2331,
+      env.bottom ?? this.chapter.fog?.color ?? 0x0a0c12,
+      env.horizon ?? this.chapter.ambientLight?.color ?? 0x33404f
+    );
+    scene.environmentIntensity = this.chapter.envIntensity ?? 0.45;
+
     const amb = this.chapter.ambientLight || { color: 0x1a2030, intensity: 0.2 };
     this.ambient = new THREE.AmbientLight(amb.color, amb.intensity);
     scene.add(this.ambient);
@@ -60615,6 +61719,9 @@ class Game {
     this.environment = this.chapter.environment
       ? new Environment(scene, this.chapter.environment, this.audio)
       : null;
+
+    this.weapons.shells?.clear();
+    this.weapons.shells = new ShellPool(scene);
 
     this.audio.resume();
     this.audio.setSpace(this.chapter.space || 'house');
@@ -61452,8 +62559,11 @@ class Game {
 
 
 
+}
+
 
 /* ===== src/main.js ===== */
+{
 
 
 
@@ -61612,6 +62722,8 @@ async function boot() {
 }
 
 boot();
+
+}
 
 })(THREE);
 })();

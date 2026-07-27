@@ -13,6 +13,7 @@ import { Level, TILE } from './builder.js';
 import { LEVELS } from './levels.js';
 import { Player } from './player.js';
 import { Weapons } from './weapons.js';
+import { ShellPool } from './viewmodels.js';
 import { Enemy, Companion, PlayerAvatar } from './enemies.js';
 import { Boss } from './boss.js';
 import { HUD } from './hud.js';
@@ -79,7 +80,7 @@ export class Game {
 
     this.settings = {
       quality: 'high',
-      sensitivity: 1,
+      sensitivity: 1.3,
       invertY: false,
       master: 0.85,
       music: 0.7,
@@ -188,6 +189,16 @@ export class Game {
     this.level = new Level(this.chapter, this.textures);
     scene.add(this.level.group);
 
+    // A probe built from the chapter's own palette, so metals reflect the room
+    // they are standing in rather than a generic studio.
+    const env = this.chapter.env || {};
+    scene.environment = this.rt.buildEnvironment(
+      env.top ?? this.chapter.environment?.skyTop ?? 0x1a2331,
+      env.bottom ?? this.chapter.fog?.color ?? 0x0a0c12,
+      env.horizon ?? this.chapter.ambientLight?.color ?? 0x33404f
+    );
+    scene.environmentIntensity = this.chapter.envIntensity ?? 0.45;
+
     const amb = this.chapter.ambientLight || { color: 0x1a2030, intensity: 0.2 };
     this.ambient = new THREE.AmbientLight(amb.color, amb.intensity);
     scene.add(this.ambient);
@@ -240,6 +251,9 @@ export class Game {
     this.environment = this.chapter.environment
       ? new Environment(scene, this.chapter.environment, this.audio)
       : null;
+
+    this.weapons.shells?.clear();
+    this.weapons.shells = new ShellPool(scene);
 
     this.audio.resume();
     this.audio.setSpace(this.chapter.space || 'house');
