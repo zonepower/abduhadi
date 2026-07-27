@@ -5,6 +5,8 @@ import { Input } from '../engine/input.js';
 import { AudioEngine } from '../engine/audio.js';
 import { VoiceDirector } from '../engine/voice.js';
 import { Vocals } from '../engine/vocals.js';
+import { VoiceBank } from '../engine/voicebank.js';
+import { VOICE_DATA } from './voicebank-data.js';
 import { Cinema } from '../engine/cinema.js';
 import { Environment } from './environment.js';
 import { Level, TILE } from './builder.js';
@@ -27,7 +29,8 @@ export class Game {
     this.audio = new AudioEngine();
     this.vocals = new Vocals(this.audio);
     this.audio.vocals = this.vocals;
-    this.voice = new VoiceDirector(this.audio, this.vocals);
+    this.voiceBank = new VoiceBank(this.audio, VOICE_DATA);
+    this.voice = new VoiceDirector(this.audio, this.vocals, this.voiceBank);
     this.input = new Input(canvas);
     this.hud = new HUD();
 
@@ -562,9 +565,13 @@ export class Game {
     this.audio.laugh();
     const line = LAUGH_LINES[Math.floor(Math.random() * LAUGH_LINES.length)];
     this.hud.showSubtitle({ character: { name: 'الراعي', color: '#ff5d5d' }, text: line });
+    // the taunt itself is a recorded clip, played once the laugh dies down
+    setTimeout(() => {
+      if (!this.voice.current) this.voiceBank.play('shepherd', line);
+    }, 1100);
     setTimeout(() => {
       if (!this.voice.current) this.hud.showSubtitle(null);
-    }, 2200);
+    }, 4200);
   }
 
   /** Hard cut to black (or back). `seconds` is the fade length. */

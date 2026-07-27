@@ -44,9 +44,10 @@ const FEMALE_HINTS = /hoda|laila|layla|salma|amira|amina|noura|nora|maryam|zeina
 const MALE_HINTS = /majed|maged|naayf|nayef|tarik|tariq|hamed|omar|khalid|male|man|ذكر|ماجد/i;
 
 export class VoiceDirector {
-  constructor(audio, vocals) {
+  constructor(audio, vocals, bank) {
     this.audio = audio;
     this.vocals = vocals;
+    this.bank = bank || null;
     this.synth = window.speechSynthesis || null;
     this.voices = {};
     this.enabled = true;
@@ -117,6 +118,9 @@ export class VoiceDirector {
   }
 
   get voiceReport() {
+    if (this.bank && this.bank.count) {
+      return `مسجَّلة مسبقاً بأصوات عصبية — ${this.bank.count} مقطعاً بأربعة ممثلين`;
+    }
     if (!this.synth) return 'المتصفح لا يدعم النطق';
     if (!this.voices.karim) return 'لا توجد أصوات مثبّتة';
     const names = new Set(Object.values(this.voices).map((v) => v && v.name).filter(Boolean));
@@ -192,7 +196,13 @@ export class VoiceDirector {
     return syllables * step + 0.15;
   }
 
-  #speakClause(who, text, profile) {
+  async #speakClause(who, text, profile) {
+    // 1) studio-recorded neural clip
+    if (this.enabled && this.bank && this.bank.has(who, text)) {
+      const played = await this.bank.play(who, text);
+      if (played) return undefined;
+    }
+    // 2) live system TTS  3) murmured timbre
     return new Promise((resolve) => {
       if (!this.enabled || !this.available) {
         const seconds = this.#murmur(who, text, profile);
@@ -253,6 +263,16 @@ export class VoiceDirector {
     if (emotion.pre) await wait(this.#gesture(emotion.pre, who) * 0.85);
     if (this._cancelled) return this.#finish(line);
 
+    // whole-line recorded clip: natural sentence prosody in one take
+    if (this.enabled && this.bank && !emotion.between && this.bank.has(who, line.text)) {
+      const played = await this.bank.play(who, line.text);
+      if (this._cancelled) return this.#finish(line);
+      if (played) {
+        if (emotion.post) this.#gesture(emotion.post, who);
+        return this.#finish(line);
+      }
+    }
+
     const clauses = this.#clauses(line.text);
     for (let i = 0; i < clauses.length; i += 1) {
       // eslint-disable-next-line no-await-in-loop
@@ -281,6 +301,7 @@ export class VoiceDirector {
 
   skip() {
     if (this.synth) this.synth.cancel();
+    this.bank?.stop();
     this._cancelled = true;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     const line = this.current;
@@ -292,6 +313,7 @@ export class VoiceDirector {
 
   clear() {
     if (this.synth) this.synth.cancel();
+    this.bank?.stop();
     this._cancelled = true;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     this.queue.forEach((l) => l.resolve && l.resolve());

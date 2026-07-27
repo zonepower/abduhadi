@@ -1,0 +1,622 @@
+[
+ {
+  "who": "karim",
+  "text": "هذا المطر لا يريد أن يتوقف.",
+  "emo": "soft"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، قدماي تؤلمانني.",
+  "emo": "soft"
+ },
+ {
+  "who": "karim",
+  "text": "لا تبتعدي عني يا ليلى.",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "بابا… لماذا كل النوافذ مسمّرة من الداخل؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لأنه بيت قديم ومهجور. لا شيء أكثر من ذلك.",
+  "emo": "soft"
+ },
+ {
+  "who": "layla",
+  "text": "إذاً لماذا هناك ضوء في الطابق العلوي؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "الباب الأمامي مفتوح…",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "لم يكن مفتوحاً قبل قليل.",
+  "emo": "afraid"
+ },
+ {
+  "who": "shepherd",
+  "text": "ادخل. أنا في انتظاركما منذ زمن طويل.",
+  "emo": "cold"
+ },
+ {
+  "who": "layla",
+  "text": "بابا؟ من قال ذلك؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "…لا أحد. ادخلي بسرعة.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "كشّاف. الحمد لله.",
+  "emo": "soft"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، أسمع أحداً يمشي فوقنا.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "الغبار هنا لم يُلمس منذ سنوات.",
+  "emo": "soft"
+ },
+ {
+  "who": "layla",
+  "text": "لا أحب هذا المكان.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "ابقي قريبة.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "أُغلق الباب خلفنا…",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، أنا خائفة.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لا بأس. الريح فقط. ابحثي معي عن هاتف أو لوحة كهرباء.",
+  "emo": "soft"
+ },
+ {
+  "who": "karim",
+  "text": "يا الله… ما هذا الشيء؟!",
+  "emo": "scream"
+ },
+ {
+  "who": "layla",
+  "text": "بابا! خلفك!",
+  "emo": "scream"
+ },
+ {
+  "who": "karim",
+  "text": "اختبئي! اختبئي الآن!",
+  "emo": "angry"
+ },
+ {
+  "who": "karim",
+  "text": "صور… كلها لعائلات. وكلها ممزقة عند وجه الأب.",
+  "emo": "tense"
+ },
+ {
+  "who": "shepherd",
+  "text": "كلهم جرّبوا ما ستجرّبه. كلهم بكوا في النهاية.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "لوحة الكهرباء. ثلاثة مصاهر ناقصة.",
+  "emo": "calm"
+ },
+ {
+  "who": "karim",
+  "text": "مصهر واحد. باقي اثنان.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "الثاني. أوشكت.",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، أسرع أرجوك.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "الثالث! هيا إلى اللوحة.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "هيا… اشتغل…",
+  "emo": "tense"
+ },
+ {
+  "who": "shepherd",
+  "text": "نور؟ كم هذا لطيف. الآن أستطيع أن أراكما جيداً.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "الباب انفتح. القبو… لا خيار آخر.",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "الماء بارد يا بابا.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لا تتركي يدي.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "هناك شيء يتحرك في الماء.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "الماء يصل إلى الركبة. انتبهي لخطواتك.",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، لماذا يوجد أقفاص هنا؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لا تنظري إليها. انظري إلى ظهري فقط.",
+  "emo": "tense"
+ },
+ {
+  "who": "shepherd",
+  "text": "ثلاثة صمامات يا كريم. ثلاث فرصٍ لتغيّر رأيك.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "اخرج وحدك… واتركها لي. وسأفتح لك الباب بنفسي.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "لن تلمسها. ولو كان آخر شيء أفعله.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "سنرى.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "إنها تسبح تحت الماء… ابتعدي عن الحافة!",
+  "emo": "scream"
+ },
+ {
+  "who": "karim",
+  "text": "الماء ينسحب! هيا يا ليلى، البا…",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "ليلى! أين أنتِ؟!",
+  "emo": "scream"
+ },
+ {
+  "who": "karim",
+  "text": "ليلى! أنا قادم! اصمدي يا حبيبتي!",
+  "emo": "scream"
+ },
+ {
+  "who": "shepherd",
+  "text": "لا تركض. ستفوّت على نفسك المتعة.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "شموع… كأن أحداً كان ينتظر هذه الليلة.",
+  "emo": "tense"
+ },
+ {
+  "who": "shepherd",
+  "text": "ليس أحداً. أنا.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "على مهلك يا كريم. لقد وصلتَ في الوقت المناسب تماماً.",
+  "emo": "mock"
+ },
+ {
+  "who": "layla",
+  "text": "بابا… أنا خائفة.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لا تنظري إليه يا حبيبتي.",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "انظري إليّ أنا.",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "انظري إليّ فقط.",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "دعها تذهب.",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "خذني أنا.",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "أتوسل إليك…",
+  "emo": "plead"
+ },
+ {
+  "who": "karim",
+  "text": "خذني أنا وحدي.",
+  "emo": "plead"
+ },
+ {
+  "who": "shepherd",
+  "text": "كلهم يقولون هذا. كلهم يظنون أن التوسّل عملة.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "هذا هو الجزء الذي أحبّه: اللحظة التي يفهم فيها الأب…",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "…أنه لا يستطيع أن يفعل شيئاً.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "لا. لا لا لا — لا تفعل! لااااا!",
+  "emo": "scream"
+ },
+ {
+  "who": "layla",
+  "text": "…بابا.",
+  "emo": "whisper"
+ },
+ {
+  "who": "karim",
+  "text": "ليلى…",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "ليلى،",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "افتحي عينيكِ.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "أرجوكِ…",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "افتحي عينيكِ يا حبيبتي.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "أنا هنا.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "بابا هنا.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "قومي…",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "قومي أرجوكِ…",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "أنا آسف.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "أنا آسف يا ليلى…",
+  "emo": "cry"
+ },
+ {
+  "who": "shepherd",
+  "text": "ابكِ. ابكِ أكثر.",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "البكاء هو أجمل صوتٍ في هذا البيت. لا شيء يعلو عليه.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "والآن اخرج. اترك جثتها لي واخرج، فأنا لا أقتل الآباء…",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "…أنا أتركهم يعيشون.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "لا.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "لن أخرج.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "سأقتلك.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "…أخيراً.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "أخيراً أصبحتَ مسلّياً يا كريم.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "أينما ذهبت… سأجدك.",
+  "emo": "angry"
+ },
+ {
+  "who": "karim",
+  "text": "اخرج! اخرج أيها الجبان!",
+  "emo": "angry"
+ },
+ {
+  "who": "karim",
+  "text": "لن أتعب قبلك.",
+  "emo": "angry"
+ },
+ {
+  "who": "karim",
+  "text": "لا مزيد من الهرب.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "أنت غاضب. جيد.",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "الغضب يجعل اللحم أطيب.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "هذا من أجل ليلى.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "أتظن أن الرصاص يوجع من مات مرتين؟",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "سأكتشف ذلك.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "كفى لعباً!",
+  "emo": "angry"
+ },
+ {
+  "who": "karim",
+  "text": "نعم. كفى.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "هذا البيت… لن يدعك تخرج…",
+  "emo": "hurt"
+ },
+ {
+  "who": "shepherd",
+  "text": "لن يدعك…",
+  "emo": "hurt"
+ },
+ {
+  "who": "karim",
+  "text": "لا يهم.",
+  "emo": "soft"
+ },
+ {
+  "who": "karim",
+  "text": "لم أعد أريد الخروج.",
+  "emo": "cry"
+ },
+ {
+  "who": "narrator",
+  "text": "خرج كريم من البيت عند الفجر، وابنته بين ذراعيه.",
+  "emo": "soft"
+ },
+ {
+  "who": "narrator",
+  "text": "لم يخبر أحداً بما رآه. ولم يعد أحدٌ يسمع صوت ضحكٍ في ذلك الطريق.",
+  "emo": "soft"
+ },
+ {
+  "who": "narrator",
+  "text": "لكن في كل ليلة مطر… يقف على الطريق، وينتظر أن يضيع أحدهم.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "انتهى الأمر.",
+  "emo": "cry"
+ },
+ {
+  "who": "karim",
+  "text": "نامي الآن.",
+  "emo": "cry"
+ },
+ {
+  "who": "narrator",
+  "text": "في ليلة مطرٍ لا ينتهي، تعطّلت سيارةٌ على طريقٍ لا يمرّ به أحد.",
+  "emo": "soft"
+ },
+ {
+  "who": "karim",
+  "text": "حسناً… المحرك مات تماماً.",
+  "emo": "tense"
+ },
+ {
+  "who": "layla",
+  "text": "بابا، أين نحن؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "لا أعرف يا حبيبتي. لكن هناك بيت. سنطلب المساعدة ونعود.",
+  "emo": "soft"
+ },
+ {
+  "who": "layla",
+  "text": "البيت مظلم. لا أحد فيه.",
+  "emo": "afraid"
+ },
+ {
+  "who": "karim",
+  "text": "ابقي خلفي وامسكي يدي. لن يحدث لكِ شيء. أعدكِ.",
+  "emo": "soft"
+ },
+ {
+  "who": "shepherd",
+  "text": "أهلاً بك في بيتي يا كريم.",
+  "emo": "cold"
+ },
+ {
+  "who": "karim",
+  "text": "من أنت؟! كيف تعرف اسمي؟",
+  "emo": "afraid"
+ },
+ {
+  "who": "shepherd",
+  "text": "أنا أعرف كل من يدخل… وكل من لا يخرج.",
+  "emo": "cold"
+ },
+ {
+  "who": "shepherd",
+  "text": "وأشكرك. لقد أحضرتَ لي هديّةً صغيرة.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "ابتعد عنها! هل تسمعني؟! ابتعد عنها!",
+  "emo": "scream"
+ },
+ {
+  "who": "layla",
+  "text": "باباااا!",
+  "emo": "scream"
+ },
+ {
+  "who": "karim",
+  "text": "ليلى؟! ليلى!! لا!",
+  "emo": "scream"
+ },
+ {
+  "who": "shepherd",
+  "text": "قلتُ لك أن تخرج وحدك. الآن ستخرج وحدك فعلاً.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "سآتي إليك. أقسم بالله سآتي إليك.",
+  "emo": "angry"
+ },
+ {
+  "who": "shepherd",
+  "text": "هههههههه.",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "ما زلتَ حيّاً؟ كم هذا مؤسف.",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "اركض. الركض يجعل الأمر أطول.",
+  "emo": "mock"
+ },
+ {
+  "who": "shepherd",
+  "text": "هل تسمع؟ إنها تناديك.",
+  "emo": "mock"
+ },
+ {
+  "who": "karim",
+  "text": "صمام 1 من ٣.",
+  "emo": "tense"
+ },
+ {
+  "who": "karim",
+  "text": "صمام 2 من ٣.",
+  "emo": "tense"
+ }
+]
