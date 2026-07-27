@@ -110,6 +110,14 @@ export const STORY = {
     },
 
     async onPickup(item, ctx) {
+      if (item.kind === 'revolver') {
+        ctx.giveWeapon('revolver', item.ammo ?? 18);
+        await ctx.say([
+          K('مسدس… في درج مكتب. من كان يخاف إلى هذا الحد؟', 'tense'),
+          S('هو. ولم ينفعه.', 'mock'),
+        ]);
+        return;
+      }
       ctx.flags.add(`fuse${ctx.pickedFuses}`);
       if (ctx.pickedFuses === 1) {
         ctx.wakeEnemies(1);

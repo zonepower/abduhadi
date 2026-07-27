@@ -59135,6 +59135,7 @@ const CH2 = {
   title: 'الفصل الثاني',
   subtitle: 'البهو المظلم',
   objective: 'اجمع ثلاثة مصاهر وأعد الكهرباء',
+  loadout: [],
   ambience: 'house',
   space: 'house',
   environment: { dust: 0.8 },
@@ -59177,6 +59178,7 @@ const CH2 = {
       1: [[4, 8]],
       2: [[35, 20]],
       3: [[5, 20]],
+      4: [[33, 23]],
       F: [[33, 7]],
       '!': [[20, 25]],
       '*': [[12, 11]],
@@ -59200,6 +59202,7 @@ const CH2 = {
     1: { kind: 'fuse', name: 'مصهر (١/٣)', line: 'مصهر واحد. باقي اثنان.' },
     2: { kind: 'fuse', name: 'مصهر (٢/٣)', line: 'الثاني. أوشكت.' },
     3: { kind: 'fuse', name: 'مصهر (٣/٣)', line: 'الثالث! هيا إلى اللوحة.' },
+    4: { kind: 'revolver', name: 'مسدس قديم', ammo: 18 },
   },
   props: [
     { type: 'chandelier', marker: 'h', hang: true },
@@ -59231,6 +59234,8 @@ const CH3 = {
   title: 'الفصل الثالث',
   subtitle: 'القبو الغارق',
   objective: 'أدر الصمامات الثلاثة لتصريف المياه',
+  // chapter select must never drop you in unarmed
+  loadout: [{ id: 'axe' }, { id: 'revolver', ammo: 18, reserve: 18 }],
   ambience: 'basement',
   space: 'basement',
   environment: { dust: 0.4 },
@@ -59310,6 +59315,7 @@ const CH4 = {
   title: 'الفصل الرابع',
   subtitle: 'المذبح',
   objective: 'اعثر على ليلى',
+  loadout: [{ id: 'axe' }, { id: 'revolver', ammo: 24, reserve: 24 }],
   ambience: 'chapel',
   space: 'chapel',
   environment: { dust: 0.9 },
@@ -59376,6 +59382,7 @@ const CH5 = {
   title: 'الفصل الخامس',
   subtitle: 'الانتقام',
   objective: 'اقتل الراعي',
+  loadout: [{ id: 'axe' }, { id: 'revolver', ammo: 24, reserve: 24 }, { id: 'shotgun', ammo: 24, reserve: 24 }],
   ambience: 'fire',
   space: 'arena',
   environment: { embers: 1.0, dust: 0.5 },
@@ -61058,6 +61065,14 @@ STORY = {
     },
 
     async onPickup(item, ctx) {
+      if (item.kind === 'revolver') {
+        ctx.giveWeapon('revolver', item.ammo ?? 18);
+        await ctx.say([
+          K('مسدس… في درج مكتب. من كان يخاف إلى هذا الحد؟', 'tense'),
+          S('هو. ولم ينفعه.', 'mock'),
+        ]);
+        return;
+      }
       ctx.flags.add(`fuse${ctx.pickedFuses}`);
       if (ctx.pickedFuses === 1) {
         ctx.wakeEnemies(1);
@@ -61722,6 +61737,7 @@ Game = class Game {
 
     this.weapons.shells?.clear();
     this.weapons.shells = new ShellPool(scene);
+    this.#applyLoadout();
 
     this.audio.resume();
     this.audio.setSpace(this.chapter.space || 'house');
@@ -61951,10 +61967,32 @@ Game = class Game {
     });
   }
 
+  /**
+   * Grants the chapter's minimum kit. Jumping straight to a late chapter from
+   * the menu must never leave you unarmed, and a retry must not stack ammo,
+   * so this only ever tops up to a floor.
+   */
+  #applyLoadout() {
+    const loadout = this.chapter.loadout || [];
+    loadout.forEach(({ id, ammo = 0, reserve = 0 }) => {
+      if (!this.weapons.owned.has(id)) {
+        this.weapons.give(id, ammo);
+      } else if (reserve) {
+        this.weapons.reserve[id] = Math.max(this.weapons.reserve[id] || 0, reserve);
+      }
+    });
+    // equip the heaviest thing on hand
+    ['shotgun', 'revolver', 'axe'].some((id) => this.weapons.owned.has(id) && this.weapons.setWeapon(id));
+    this.hud.updateWeapon(this.weapons);
+  }
+
   giveWeapon(id, ammo = 0) {
     this.weapons.give(id, ammo);
     this.hud.updateWeapon(this.weapons);
-    this.hud.showToast(`حصلت على: ${this.weapons.def.name}`);
+    const slot = { hands: '1', axe: '2', revolver: '3', shotgun: '4' }[id];
+    this.hud.showToast(
+      `حصلت على: ${this.weapons.def.name}${slot ? ` — المفتاح ${slot}` : ''}`, 5
+    );
     this.audio.pickup(true);
   }
 

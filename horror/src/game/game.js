@@ -254,6 +254,7 @@ export class Game {
 
     this.weapons.shells?.clear();
     this.weapons.shells = new ShellPool(scene);
+    this.#applyLoadout();
 
     this.audio.resume();
     this.audio.setSpace(this.chapter.space || 'house');
@@ -483,10 +484,32 @@ export class Game {
     });
   }
 
+  /**
+   * Grants the chapter's minimum kit. Jumping straight to a late chapter from
+   * the menu must never leave you unarmed, and a retry must not stack ammo,
+   * so this only ever tops up to a floor.
+   */
+  #applyLoadout() {
+    const loadout = this.chapter.loadout || [];
+    loadout.forEach(({ id, ammo = 0, reserve = 0 }) => {
+      if (!this.weapons.owned.has(id)) {
+        this.weapons.give(id, ammo);
+      } else if (reserve) {
+        this.weapons.reserve[id] = Math.max(this.weapons.reserve[id] || 0, reserve);
+      }
+    });
+    // equip the heaviest thing on hand
+    ['shotgun', 'revolver', 'axe'].some((id) => this.weapons.owned.has(id) && this.weapons.setWeapon(id));
+    this.hud.updateWeapon(this.weapons);
+  }
+
   giveWeapon(id, ammo = 0) {
     this.weapons.give(id, ammo);
     this.hud.updateWeapon(this.weapons);
-    this.hud.showToast(`حصلت على: ${this.weapons.def.name}`);
+    const slot = { hands: '1', axe: '2', revolver: '3', shotgun: '4' }[id];
+    this.hud.showToast(
+      `حصلت على: ${this.weapons.def.name}${slot ? ` — المفتاح ${slot}` : ''}`, 5
+    );
     this.audio.pickup(true);
   }
 
