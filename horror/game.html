@@ -53677,8 +53677,20 @@ var noise2D, fbm, buildTextureLibrary;
 
 
 // ---------------------------------------------------------------------------
-// Procedural PBR texture factory. Everything is generated on canvases at load
-// time so the game ships with zero binary assets.
+// Procedural PBR texture factory — English Victorian interior.
+//
+// Everything is generated on canvases at load time so the game ships with zero
+// binary assets. The library covers a real house: damask and flock papers,
+// oak wainscot, block parquet, marble, quarry tile, glazed and common brick,
+// flagstone, book spines, rugs, fabric — plus skin, cloth and hair for the
+// cast.
+//
+// Two things keep the bake affordable:
+//   * `field()` caches the expensive fbm base fields, so the six papers share
+//     one plaster substrate and the four timbers share one grain field
+//     instead of each recomputing it per pixel.
+//   * `buildTextureLibrary()` is async and yields to the browser between
+//     surfaces, so the loading screen keeps painting instead of freezing.
 // ---------------------------------------------------------------------------
 
 const PERM = new Uint8Array(512);
@@ -53698,6 +53710,8 @@ const PERM = new Uint8Array(512);
 
 const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
 const lerp = (a, b, t) => a + (b - a) * t;
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const TAU = Math.PI * 2;
 
 function grad(hash, x, y) {
   switch (hash & 3) {
@@ -53744,6 +53758,19 @@ fbm = function fbm(x, y, octaves = 5, period = 256) {
     freq *= 2;
   }
   return sum / norm;
+}
+
+/** Deterministic per-id hash in 0..1 — used for tile/brick/plank variance. */
+function hash1(n) {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+/** 1 inside `inner`, ramping to 0 at `outer`. The workhorse for motif edges. */
+function band(d, inner, outer) {
+  if (d <= inner) return 1;
+  if (d >= outer) return 0;
+  return 1 - (d - inner) / (outer - inner);
 }
 
 function makeCanvas(size) {
@@ -53808,201 +53835,846 @@ function writeGray(values, size) {
   return toTexture(canvas);
 }
 
-// --- surface generators -----------------------------------------------------
+// --- shared base fields -----------------------------------------------------
+//
+// An fbm sample is by far the most expensive thing in this file. Every paper
+// wants the same plaster substrate and every timber the same grain, so each
+// field is computed once and sampled by index from then on.
 
-function woodPlanks(size, tint) {
-  const canvas = makeCanvas(size);
-  const ctx = canvas.getContext('2d');
-  const image = ctx.createImageData(size, size);
-  const height = new Float32Array(size * size);
-  const rough = new Float32Array(size * size);
-  const plank = size / 8;
+const FIELDS = new Map();
+
+function field(key, size, fn) {
+  const id = `${key}@${size}`;
+  const cached = FIELDS.get(id);
+  if (cached) return cached;
+  const values = new Float32Array(size * size);
   for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const row = Math.floor(y / plank);
-      const offset = (row % 2) * plank * 0.5;
-      const px = (x + offset) % size;
-      const along = px / size;
-      const seam = Math.min(y % plank, plank - (y % plank)) / plank;
-      const boardSeam = Math.min((px % (plank * 2)), plank * 2 - (px % (plank * 2))) / (plank * 2);
-      // Growth rings: a warped distance field makes the grain curve around
-      // the board the way sawn timber does, instead of running dead straight.
-      const warp = fbm(along * 3.2 + row * 5.1, (y % plank) * 0.05, 3) * 1.9;
-      const rings = Math.abs(Math.sin((along * 26 + warp * 6 + row * 2.1)));
-      const grain = rings * 0.62 + fbm(along * 18 + row * 7.3, (y % plank) * 0.18 + row * 3.1, 5) * 0.38;
-      const knot = Math.max(0, 1 - Math.hypot(((px % (plank * 2)) - plank) / plank, ((y % plank) - plank * 0.5) / (plank * 0.5)) * 1.7);
-      const wear = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
-      let shade = 0.45 + grain * 0.32 + knot * 0.18;
-      shade *= 0.72 + wear * 0.4;
-      if (seam < 0.06) shade *= 0.25 + seam * 6;
-      if (boardSeam < 0.02) shade *= 0.35 + boardSeam * 20;
-      const idx = (y * size + x) * 4;
-      image.data[idx] = Math.min(255, shade * tint[0] * 255);
-      image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
-      image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
-      image.data[idx + 3] = 255;
-      // the earlywood between rings sits slightly proud once a floor is old
-      height[y * size + x] = shade * 0.55 + (seam < 0.06 ? -0.6 : 0) + rings * 0.42;
-      // burnished along the walking line, dull and open-pored elsewhere
-      const traffic = Math.max(0, 1 - Math.abs((y % (plank * 4)) / (plank * 4) - 0.5) * 3.4);
-      rough[y * size + x] = 0.72 - traffic * 0.34 + (1 - wear) * 0.18 - rings * 0.06;
-    }
+    for (let x = 0; x < size; x += 1) values[y * size + x] = fn(x, y);
   }
-  ctx.putImageData(image, 0, 0);
+  FIELDS.set(id, values);
+  return values;
+}
+
+/** Damp, cracked, peeling plaster — the substrate under every wall covering. */
+function plasterFields(size) {
   return {
-    map: toTexture(canvas, { srgb: true }),
-    normalMap: heightToNormal(height, size, 2.6),
-    roughnessMap: writeGray(rough, size),
+    base: field('plaster.base', size, (x, y) => fbm(x * 0.014, y * 0.014, 6) * 0.5 + 0.5),
+    fine: field('plaster.fine', size, (x, y) => fbm(x * 0.12, y * 0.12, 3) * 0.5 + 0.5),
+    stain: field('plaster.stain', size, (x, y) => (
+      Math.pow(Math.max(0, fbm(x * 0.006 + 40, y * 0.006 - 12, 4) * 0.5 + 0.5), 2.2)
+    )),
+    peel: field('plaster.peel', size, (x, y) => fbm(x * 0.009 - 80, y * 0.009 + 33, 4) * 0.5 + 0.5),
+    crack: field('plaster.crack', size, (x, y) => {
+      const main = Math.abs(fbm(x * 0.013 + 200, y * 0.013 - 90, 4));
+      const branch = Math.abs(fbm(x * 0.031 - 15, y * 0.031 + 61, 3));
+      return Math.max(main < 0.022 ? 1 - main / 0.022 : 0, branch < 0.016 ? 0.55 : 0);
+    }),
+    grime: field('plaster.grime', size, (x, y) => fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5),
   };
 }
 
-function plaster(size, tint, damp) {
+/** Sawn timber: curving growth rings plus wear. Shared by every wood surface. */
+function timberFields(size) {
+  return {
+    warp: field('timber.warp', size, (x, y) => fbm(x * 0.02 + 11, y * 0.02 - 4, 3)),
+    fibre: field('timber.fibre', size, (x, y) => fbm(x * 0.09, y * 0.012, 5) * 0.5 + 0.5),
+    wear: field('timber.wear', size, (x, y) => fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5),
+  };
+}
+
+// --- surface scaffold -------------------------------------------------------
+
+/**
+ * Runs `fn(x, y, i, out)` over every texel and packages the result as a PBR
+ * set. `out` is reused between texels, so a generator writes colour in
+ * `out.r/g/b` (0..1), displacement in `out.h`, and `out.rough` / `out.metal`.
+ */
+function surface(size, opts, fn) {
   const canvas = makeCanvas(size);
   const ctx = canvas.getContext('2d');
   const image = ctx.createImageData(size, size);
+  const data = image.data;
   const height = new Float32Array(size * size);
   const rough = new Float32Array(size * size);
+  const metal = opts.metal ? new Float32Array(size * size) : null;
+  const out = { r: 0, g: 0, b: 0, h: 0, rough: 0.8, metal: 0 };
+
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      const base = fbm(x * 0.014, y * 0.014, 6) * 0.5 + 0.5;
-      const fine = fbm(x * 0.12, y * 0.12, 3) * 0.5 + 0.5;
-      const stain = Math.pow(Math.max(0, fbm(x * 0.006 + 40, y * 0.006 - 12, 4) * 0.5 + 0.5), 2.2);
-      // peeling patches: sharp threshold on a low-frequency field
-      const peel = fbm(x * 0.009 - 80, y * 0.009 + 33, 4) * 0.5 + 0.5;
-      const peeled = peel > 0.58 ? 1 : 0;
-      // Hairline cracks: the ridges of a warped noise field, thresholded thin.
-      // Real cracks are long and branching, which |noise| near zero gives you.
-      const crackField = Math.abs(fbm(x * 0.013 + 200, y * 0.013 - 90, 4));
-      const crack = crackField < 0.022 ? 1 - crackField / 0.022 : 0;
-      const branch = Math.abs(fbm(x * 0.031 - 15, y * 0.031 + 61, 3)) < 0.016 ? 0.55 : 0;
-      const cracked = Math.max(crack, branch * (peel > 0.45 ? 1 : 0));
-      let shade = 0.55 + base * 0.3 + fine * 0.12;
-      shade *= 1 - stain * damp * 0.75;
-      if (peeled) shade *= 0.62;
-      shade *= 1 - cracked * 0.62;
-      const idx = (y * size + x) * 4;
-      image.data[idx] = Math.min(255, shade * tint[0] * 255);
-      image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
-      image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
-      image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.6 + fine * 0.25 - peeled * 0.35 - cracked * 0.8;
-      rough[y * size + x] = 0.72 + fine * 0.2 - stain * damp * 0.35 + cracked * 0.2;
+      const i = y * size + x;
+      out.h = 0; out.rough = 0.8; out.metal = 0;
+      fn(x, y, i, out);
+      const idx = i * 4;
+      data[idx] = clamp01(out.r) * 255;
+      data[idx + 1] = clamp01(out.g) * 255;
+      data[idx + 2] = clamp01(out.b) * 255;
+      data[idx + 3] = 255;
+      height[i] = out.h;
+      rough[i] = out.rough;
+      if (metal) metal[i] = out.metal;
     }
   }
   ctx.putImageData(image, 0, 0);
-  return {
-    map: toTexture(canvas, { srgb: true }),
-    normalMap: heightToNormal(height, size, 1.8),
+
+  const result = {
+    map: toTexture(canvas, { srgb: true, repeat: opts.repeat ?? 1 }),
+    normalMap: heightToNormal(height, size, opts.normalStrength ?? 2.2),
     roughnessMap: writeGray(rough, size),
   };
+  if (metal) result.metalnessMap = writeGray(metal, size);
+  return result;
+}
+
+/** Multiply a linear tint into `out`, given a single scalar shade. */
+function tinted(out, shade, tint) {
+  out.r = shade * tint[0];
+  out.g = shade * tint[1];
+  out.b = shade * tint[2];
+}
+
+// --- wall coverings ---------------------------------------------------------
+
+/**
+ * A damask motif inside a unit cell, mirrored about the vertical axis.
+ * Every damask is the same three elements: an ogee frame, a palmette on the
+ * axis, and scrolling leaves in the shoulders. Returns 0..1 coverage.
+ */
+function damaskMotif(u, v) {
+  const mu = Math.abs(u - 0.5) * 2;         // 0 on the axis, 1 at the cell edge
+  let m = 0;
+
+  // ogee frame — a pointed oval that swells at mid-height
+  const halfWidth = Math.pow(Math.sin(Math.PI * v), 0.75) * 0.94;
+  m = Math.max(m, band(Math.abs(mu - halfWidth), 0.05, 0.10));
+
+  // central palmette
+  const dx = (u - 0.5) * 2.3;
+  const dy = (v - 0.5) * 1.7;
+  const r = Math.hypot(dx, dy);
+  const theta = Math.atan2(dy, dx);
+  const lobe = 0.30 + 0.10 * Math.cos(theta * 5) + 0.045 * Math.cos(theta * 10);
+  m = Math.max(m, band(r - lobe, 0, 0.035));
+
+  // stem running down the axis out of the palmette
+  if (v > 0.5) m = Math.max(m, band(mu, 0.035, 0.075) * band(v - 0.86, 0, 0.10));
+
+  // shoulder scrolls, one either side, mirrored by construction
+  [0.28, 0.72].forEach((cv) => {
+    const sx = mu - 0.46;
+    const sy = (v - cv) * 2.3;
+    const sr = Math.hypot(sx, sy);
+    m = Math.max(m, band(Math.abs(sr - 0.17), 0.02, 0.055));
+  });
+
+  return m;
+}
+
+/** A sprig of leaves on a diagonal grid — the cheaper bedroom papers. */
+function floralMotif(u, v) {
+  const dx = (u - 0.5) * 2.0;
+  const dy = (v - 0.5) * 2.0;
+  const r = Math.hypot(dx, dy);
+  const theta = Math.atan2(dy, dx);
+  // five-petal rosette
+  const petal = 0.30 + 0.17 * Math.abs(Math.cos(theta * 2.5));
+  let m = band(r - petal, 0, 0.05);
+  m = Math.max(m, band(Math.abs(r - 0.09), 0.02, 0.04));   // calyx ring
+  // two leaves on a stem
+  [[-0.42, 0.34], [0.42, 0.34]].forEach(([lx, ly]) => {
+    const ex = (dx - lx) * 2.6;
+    const ey = (dy - ly) * 1.1;
+    m = Math.max(m, band(Math.hypot(ex, ey) - 0.30, 0, 0.06));
+  });
+  return m;
+}
+
+/**
+ * Papered wall. `motif` draws the pattern, `cells` sets the repeat, and the
+ * pattern is carried by *sheen* as much as colour — which is what a real
+ * damask or flock does, and what makes it come alive under a moving torch.
+ */
+function paperedWall(size, opts) {
+  const f = plasterFields(size);
+  const {
+    ground, pattern, cells = 3, motif = damaskMotif, dropped = true,
+    raise = 0.5, sheen = 0.42, damp = 0.8, plaster: plasterTint = [0.62, 0.57, 0.5],
+  } = opts;
+
+  return surface(size, { normalStrength: 1.9 }, (x, y, i, out) => {
+    const base = f.base[i];
+    const fine = f.fine[i];
+    const stain = f.stain[i];
+    const peel = f.peel[i];
+    const crack = f.crack[i];
+
+    // cell coordinates; a half-drop repeat staggers alternate columns
+    const cell = size / cells;
+    const cx = Math.floor(x / cell);
+    const vOffset = dropped && cx % 2 ? 0.5 : 0;
+    const u = (x % cell) / cell;
+    const v = ((y / cell) + vOffset) % 1;
+    const m = motif(u, v);
+
+    // paper torn away in patches, exposing the plaster underneath
+    const torn = peel > 0.605 ? 1 : 0;
+    const curl = peel > 0.585 && peel <= 0.605 ? 1 : 0;
+
+    if (torn) {
+      let shade = 0.52 + base * 0.30 + fine * 0.12;
+      shade *= 1 - stain * damp * 0.7;
+      shade *= 1 - crack * 0.6;
+      tinted(out, shade, plasterTint);
+      out.h = base * 0.5 + fine * 0.2 - crack * 0.8 - 0.35;
+      out.rough = 0.88 + fine * 0.1;
+      return;
+    }
+
+    // paper: ground colour, motif lifted slightly in value and a lot in sheen
+    const mix = m;
+    out.r = lerp(ground[0], pattern[0], mix);
+    out.g = lerp(ground[1], pattern[1], mix);
+    out.b = lerp(ground[2], pattern[2], mix);
+
+    const soil = 0.80 + base * 0.28;
+    const water = stain * damp;
+    out.r *= soil * (1 - water * 0.55);
+    out.g *= soil * (1 - water * 0.62);
+    out.b *= soil * (1 - water * 0.70);      // damp goes yellow-brown, not grey
+    if (curl) { out.r *= 0.55; out.g *= 0.52; out.b *= 0.5; }
+
+    out.h = base * 0.25 + m * raise + (curl ? 0.5 : 0);
+    // flock/silk motif is smoother than the matte ground — this is the pattern
+    // you actually read at a glance when the flashlight sweeps across it
+    out.rough = (0.86 - m * sheen) + fine * 0.08 - water * 0.28;
+  });
+}
+
+/** Plain lime plaster, no covering — service rooms and outbuildings. */
+function plaster(size, tint, damp) {
+  const f = plasterFields(size);
+  return surface(size, { normalStrength: 1.8 }, (x, y, i, out) => {
+    const base = f.base[i];
+    const fine = f.fine[i];
+    const stain = f.stain[i];
+    const peeled = f.peel[i] > 0.58 ? 1 : 0;
+    const cracked = f.crack[i];
+    let shade = 0.55 + base * 0.3 + fine * 0.12;
+    shade *= 1 - stain * damp * 0.75;
+    if (peeled) shade *= 0.62;
+    shade *= 1 - cracked * 0.62;
+    tinted(out, shade, tint);
+    out.h = base * 0.6 + fine * 0.25 - peeled * 0.35 - cracked * 0.8;
+    out.rough = 0.72 + fine * 0.2 - stain * damp * 0.35 + cracked * 0.2;
+  });
+}
+
+/**
+ * Stile-and-rail oak wainscot. Each cell is one panel: a flat frame around a
+ * bevelled, recessed field, with the grain running along each member.
+ */
+function oakPanel(size, tint) {
+  const t = timberFields(size);
+  const cells = 2;
+  const cell = size / cells;
+  const stile = 0.17;              // frame width as a fraction of the panel
+
+  return surface(size, { normalStrength: 3.0 }, (x, y, i, out) => {
+    const u = (x % cell) / cell;
+    const v = (y % cell) / cell;
+    const panelId = Math.floor(x / cell) * 17 + Math.floor(y / cell) * 31;
+
+    const du = Math.min(u, 1 - u);
+    const dv = Math.min(v, 1 - v);
+    const edge = Math.min(du, dv);
+    const onFrame = edge < stile;
+    const bevel = clamp01((edge - stile) / 0.075);      // 0 at the frame, 1 in the field
+
+    // grain runs vertically in the stiles, horizontally in the rails and field
+    const vertical = onFrame && du < dv;
+    const along = vertical ? y / size : x / size;
+    const across = vertical ? x / size : y / size;
+    const warp = t.warp[i] * 1.8;
+    const rings = Math.abs(Math.sin(along * 30 + warp * 6 + panelId * 0.7));
+    const grain = rings * 0.6 + t.fibre[i] * 0.4;
+    const wear = t.wear[i];
+
+    let shade = 0.40 + grain * 0.30;
+    shade *= 0.74 + wear * 0.38;
+    if (onFrame) shade *= 1.06;                        // proud members catch light
+    else shade *= 0.80 + bevel * 0.16;                 // recessed field sits darker
+    // a dark line in the quirk where field meets frame
+    if (!onFrame && bevel < 0.12) shade *= 0.55 + bevel * 3.5;
+    void across;
+
+    tinted(out, shade, tint);
+    out.h = (onFrame ? 1.0 : 0.34 + bevel * 0.30) + rings * 0.10;
+    // waxed oak: polished on the frame, duller in the recess where nobody wipes
+    out.rough = 0.52 - rings * 0.05 + (onFrame ? 0 : 0.16) + (1 - wear) * 0.12;
+  });
+}
+
+// --- floors -----------------------------------------------------------------
+
+function woodPlanks(size, tint) {
+  const t = timberFields(size);
+  return surface(size, { normalStrength: 2.6 }, (x, y, i, out) => {
+    const plank = size / 8;
+    const row = Math.floor(y / plank);
+    const offset = (row % 2) * plank * 0.5;
+    const px = (x + offset) % size;
+    const along = px / size;
+    const seam = Math.min(y % plank, plank - (y % plank)) / plank;
+    const boardSeam = Math.min(px % (plank * 2), plank * 2 - (px % (plank * 2))) / (plank * 2);
+    const warp = t.warp[i] * 1.9;
+    const rings = Math.abs(Math.sin(along * 26 + warp * 6 + row * 2.1));
+    const grain = rings * 0.62 + t.fibre[i] * 0.38;
+    const knot = Math.max(0, 1 - Math.hypot(
+      ((px % (plank * 2)) - plank) / plank,
+      ((y % plank) - plank * 0.5) / (plank * 0.5)
+    ) * 1.7);
+    const wear = t.wear[i];
+
+    let shade = 0.45 + grain * 0.32 + knot * 0.18;
+    shade *= 0.72 + wear * 0.4;
+    if (seam < 0.06) shade *= 0.25 + seam * 6;
+    if (boardSeam < 0.02) shade *= 0.35 + boardSeam * 20;
+    tinted(out, shade, tint);
+
+    out.h = shade * 0.55 + (seam < 0.06 ? -0.6 : 0) + rings * 0.42;
+    const traffic = Math.max(0, 1 - Math.abs((y % (plank * 4)) / (plank * 4) - 0.5) * 3.4);
+    out.rough = 0.72 - traffic * 0.34 + (1 - wear) * 0.18 - rings * 0.06;
+  });
+}
+
+/**
+ * Block parquet: squares of narrow fingers, grain alternating like a
+ * chessboard. Standard Victorian work for a hall or a library, and it reads
+ * instantly as *not* a plain floorboard.
+ */
+function parquet(size, tint) {
+  const t = timberFields(size);
+  const cells = 6;
+  const cell = size / cells;
+  const fingers = 4;
+
+  return surface(size, { normalStrength: 2.8 }, (x, y, i, out) => {
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    const turned = (cx + cy) % 2 === 0;
+    const u = (x % cell) / cell;
+    const v = (y % cell) / cell;
+
+    // within a block the grain runs along one axis; fingers split the other
+    const along = turned ? u : v;
+    const across = turned ? v : u;
+    const fingerId = Math.floor(across * fingers);
+    const inFinger = (across * fingers) % 1;
+    const fingerSeam = Math.min(inFinger, 1 - inFinger);
+    const blockSeam = Math.min(Math.min(u, 1 - u), Math.min(v, 1 - v));
+
+    const id = cx * 41 + cy * 7 + fingerId * 3;
+    const warp = t.warp[i] * 1.6;
+    const rings = Math.abs(Math.sin(along * 34 + warp * 5 + id * 1.7));
+    const grain = rings * 0.58 + t.fibre[i] * 0.42;
+    const wear = t.wear[i];
+    const tone = 0.86 + hash1(id) * 0.28;              // block-to-block colour
+
+    let shade = (0.42 + grain * 0.30) * tone;
+    shade *= 0.76 + wear * 0.34;
+    if (fingerSeam < 0.035) shade *= 0.34 + fingerSeam * 18;
+    if (blockSeam < 0.018) shade *= 0.28 + blockSeam * 38;
+
+    tinted(out, shade, tint);
+    out.h = 0.5 + rings * 0.28 - (fingerSeam < 0.035 ? 0.55 : 0) - (blockSeam < 0.018 ? 0.7 : 0);
+    // wax polish: bright where feet travel, dull and dusty in the corners
+    out.rough = 0.42 + (1 - wear) * 0.30 - rings * 0.05;
+  });
+}
+
+/** Polished marble chequer — the entrance hall floor of every manor. */
+function marbleCheck(size, light, dark) {
+  const veins = field('marble.vein', size, (x, y) => (
+    Math.abs(fbm(x * 0.010 + 5, y * 0.016 - 21, 5))
+  ));
+  const drift = field('marble.drift', size, (x, y) => fbm(x * 0.004 - 60, y * 0.004 + 9, 3));
+  const cells = 8;
+  const cell = size / cells;
+
+  return surface(size, { normalStrength: 1.1 }, (x, y, i, out) => {
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    const white = (cx + cy) % 2 === 0;
+    const u = (x % cell) / cell;
+    const v = (y % cell) / cell;
+    const joint = Math.min(Math.min(u, 1 - u), Math.min(v, 1 - v));
+
+    const tint = white ? light : dark;
+    // veining: thin ridges of a warped field, brighter on dark stone
+    const vein = band(veins[i], 0.006, 0.05) * (0.55 + hash1(cx * 13 + cy * 7) * 0.5);
+    const cloud = drift[i] * 0.5 + 0.5;
+    let shade = 0.74 + cloud * 0.22;
+    const veinLift = white ? -0.28 : 0.55;
+    shade *= 1 + vein * veinLift;
+
+    tinted(out, shade, tint);
+    if (joint < 0.012) {                                 // grout
+      out.r *= 0.30; out.g *= 0.30; out.b *= 0.32;
+      out.h = 0.05;
+      out.rough = 0.85;
+      return;
+    }
+    out.h = 0.6 + vein * 0.06;
+    // polished stone, dulled a little where it has been walked
+    out.rough = 0.11 + cloud * 0.10 + vein * 0.05;
+  });
+}
+
+/** Plain veined marble for chimneypieces and sills. */
+function marbleSlab(size, tint) {
+  const veins = field('marble.slabvein', size, (x, y) => (
+    Math.abs(fbm(x * 0.008 + 71, y * 0.013 - 40, 5))
+  ));
+  const drift = field('marble.drift', size, (x, y) => fbm(x * 0.004 - 60, y * 0.004 + 9, 3));
+  return surface(size, { normalStrength: 0.9 }, (x, y, i, out) => {
+    const vein = band(veins[i], 0.004, 0.042);
+    const fine = band(veins[i], 0.05, 0.09) * 0.35;
+    const cloud = drift[i] * 0.5 + 0.5;
+    const shade = (0.80 + cloud * 0.18) * (1 - (vein + fine) * 0.42);
+    tinted(out, shade, tint);
+    out.h = 0.6 - vein * 0.08;
+    out.rough = 0.10 + cloud * 0.08;
+  });
+}
+
+/** Unglazed red quarry tile — the kitchen and scullery floor. */
+function quarryTile(size, tint) {
+  const f = plasterFields(size);
+  const cells = 7;
+  const cell = size / cells;
+  return surface(size, { normalStrength: 2.6 }, (x, y, i, out) => {
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    const u = (x % cell) / cell;
+    const v = (y % cell) / cell;
+    const joint = Math.min(Math.min(u, 1 - u), Math.min(v, 1 - v));
+    const id = cx * 23 + cy * 47;
+    const tone = 0.82 + hash1(id) * 0.34;
+    const grime = f.grime[i];
+    const bevel = clamp01((joint - 0.03) / 0.05);
+
+    if (joint < 0.03) {                                  // sandy mortar
+      const m = 0.46 + f.fine[i] * 0.22 - grime * 0.2;
+      tinted(out, m, [0.72, 0.68, 0.6]);
+      out.h = 0.12;
+      out.rough = 0.94;
+      return;
+    }
+    let shade = (0.52 + f.base[i] * 0.16) * tone;
+    shade *= 1 - grime * 0.26;
+    shade *= 0.86 + bevel * 0.14;
+    tinted(out, shade, tint);
+    out.h = 0.5 + bevel * 0.34;
+    // unglazed but sealed and scrubbed for fifty years
+    out.rough = 0.55 + grime * 0.30 - bevel * 0.06;
+  });
+}
+
+/**
+ * Irregular stone flags via a jittered Worley cell. The feature point of each
+ * cell is looked up through a wrapped index, so the field tiles seamlessly
+ * even though the cells themselves are irregular.
+ */
+function flagstone(size, tint) {
+  const f = plasterFields(size);
+  const cells = 5;
+  const cell = size / cells;
+  /** Jitter of a cell, in cell-local 0..1, wrapped so the pattern tiles. */
+  const jitter = (cx, cy) => {
+    const wx = ((cx % cells) + cells) % cells;
+    const wy = ((cy % cells) + cells) % cells;
+    const h = wx * 37 + wy * 91;
+    return [0.18 + hash1(h) * 0.64, 0.18 + hash1(h + 5) * 0.64];
+  };
+
+  return surface(size, { normalStrength: 2.4 }, (x, y, i, out) => {
+    const cx = Math.floor(x / cell);
+    const cy = Math.floor(y / cell);
+    let best = 1e9;
+    let second = 1e9;
+    let bestId = 0;
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const [jx, jy] = jitter(cx + dx, cy + dy);
+        const px = (cx + dx + jx) * cell;
+        const py = (cy + dy + jy) * cell;
+        const d = Math.hypot(x - px, y - py);
+        if (d < best) {
+          second = best;
+          best = d;
+          bestId = (((cx + dx) % cells) + cells) % cells * 71 + (((cy + dy) % cells) + cells) % cells * 13;
+        } else if (d < second) second = d;
+      }
+    }
+    const joint = second - best;                        // 0 on the cell boundary
+    const tone = 0.80 + hash1(bestId) * 0.38;
+    const grime = f.grime[i];
+
+    if (joint < cell * 0.05) {
+      const m = 0.34 + f.fine[i] * 0.18;
+      tinted(out, m, [0.6, 0.58, 0.54]);
+      out.h = 0.1;
+      out.rough = 0.95;
+      return;
+    }
+    const wearIn = clamp01((joint - cell * 0.05) / (cell * 0.18));
+    let shade = (0.46 + f.base[i] * 0.24) * tone;
+    shade *= 1 - grime * 0.24;
+    tinted(out, shade, tint);
+    out.h = 0.35 + wearIn * 0.45 + f.fine[i] * 0.08;
+    // worn smooth in the middle of each flag, rough at the edges
+    out.rough = 0.88 - wearIn * 0.26 + grime * 0.1;
+  });
 }
 
 function tiles(size, tint) {
-  const canvas = makeCanvas(size);
-  const ctx = canvas.getContext('2d');
-  const image = ctx.createImageData(size, size);
-  const height = new Float32Array(size * size);
-  const rough = new Float32Array(size * size);
+  const f = plasterFields(size);
   const cell = size / 6;
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const gx = Math.min(x % cell, cell - (x % cell)) / cell;
-      const gy = Math.min(y % cell, cell - (y % cell)) / cell;
-      const grout = Math.min(gx, gy);
-      const id = Math.floor(x / cell) * 31 + Math.floor(y / cell) * 17;
-      const variance = (Math.sin(id * 12.9898) * 43758.5453) % 1;
-      const grime = fbm(x * 0.02, y * 0.02, 4) * 0.5 + 0.5;
-      const crack = Math.abs(fbm(x * 0.05 + 9, y * 0.05 - 3, 3));
-      // bevel: the last few percent of each tile rolls off toward the grout
-      const bevel = Math.min(1, Math.max(0, (grout - 0.05) / 0.06));
-      let shade = 0.68 + variance * 0.12 - grime * 0.28;
-      if (crack < 0.02) shade *= 0.45;
-      if (grout < 0.05) shade *= 0.32;
-      else shade *= 0.82 + bevel * 0.18;
-      const idx = (y * size + x) * 4;
-      image.data[idx] = Math.min(255, shade * tint[0] * 255);
-      image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
-      image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
-      image.data[idx + 3] = 255;
-      height[y * size + x] = grout < 0.05 ? 0.05 : 0.42 + bevel * 0.42 + grime * 0.08;
-      // glazed tiles stay smooth, grout lines are matte
-      rough[y * size + x] = grout < 0.05 ? 0.85 : 0.18 + grime * 0.45;
+  return surface(size, { normalStrength: 3.4 }, (x, y, i, out) => {
+    const gx = Math.min(x % cell, cell - (x % cell)) / cell;
+    const gy = Math.min(y % cell, cell - (y % cell)) / cell;
+    const grout = Math.min(gx, gy);
+    const id = Math.floor(x / cell) * 31 + Math.floor(y / cell) * 17;
+    const variance = hash1(id);
+    const grime = f.grime[i];
+    const crack = Math.abs(fbm(x * 0.05 + 9, y * 0.05 - 3, 3));
+    const bevel = clamp01((grout - 0.05) / 0.06);
+    let shade = 0.68 + variance * 0.12 - grime * 0.28;
+    if (crack < 0.02) shade *= 0.45;
+    if (grout < 0.05) shade *= 0.32;
+    else shade *= 0.82 + bevel * 0.18;
+    tinted(out, shade, tint);
+    out.h = grout < 0.05 ? 0.05 : 0.42 + bevel * 0.42 + grime * 0.08;
+    out.rough = grout < 0.05 ? 0.85 : 0.18 + grime * 0.45;
+  });
+}
+
+// --- masonry ----------------------------------------------------------------
+
+/**
+ * Running-bond brick. `glazed` switches between white glazed kitchen brick
+ * (smooth, crazed) and common red stock (rough, chipped, efflorescent).
+ */
+function brick(size, tint, { glazed = false, courses = 8 } = {}) {
+  const f = plasterFields(size);
+  const crazeField = glazed
+    ? field('brick.craze', size, (x, y) => Math.abs(fbm(x * 0.09 + 3, y * 0.09 - 7, 3)))
+    : null;
+  const courseH = size / courses;
+  const brickW = courseH * 2.2;
+
+  return surface(size, { normalStrength: glazed ? 2.0 : 3.2 }, (x, y, i, out) => {
+    const course = Math.floor(y / courseH);
+    const offset = (course % 2) * brickW * 0.5;
+    const bx = (x + offset) % size;
+    const id = course * 53 + Math.floor(bx / brickW) * 13;
+
+    const inY = (y % courseH) / courseH;
+    const inX = (bx % brickW) / brickW;
+    const mortar = Math.min(
+      Math.min(inY, 1 - inY) * (courseH / 5.5),
+      Math.min(inX, 1 - inX) * (brickW / 5.5)
+    );
+
+    if (mortar < 1) {                                    // struck mortar joint
+      const wet = f.stain[i];
+      const m = (glazed ? 0.34 : 0.42) + f.fine[i] * 0.2 - wet * 0.18;
+      tinted(out, m, glazed ? [0.45, 0.46, 0.48] : [0.68, 0.64, 0.55]);
+      out.h = 0.08 + mortar * 0.1;
+      out.rough = 0.95;
+      return;
     }
-  }
-  ctx.putImageData(image, 0, 0);
-  return {
-    map: toTexture(canvas, { srgb: true }),
-    normalMap: heightToNormal(height, size, 3.4),
-    roughnessMap: writeGray(rough, size),
-  };
+
+    const tone = 0.80 + hash1(id) * 0.40;
+    const face = f.base[i];
+    const grime = f.grime[i];
+    const bevel = clamp01((mortar - 1) / 3);
+
+    if (glazed) {
+      // white glazed brick: near-white, very smooth, with a fine crackle
+      const craze = crazeField[i] < 0.012 ? 1 : 0;
+      let shade = (0.86 + face * 0.10) * (0.94 + hash1(id) * 0.10);
+      shade *= 1 - grime * 0.22 - craze * 0.18;
+      tinted(out, shade, tint);
+      out.h = 0.55 + bevel * 0.2 - craze * 0.35;
+      out.rough = 0.13 + grime * 0.4 + craze * 0.2;
+      return;
+    }
+
+    // common stock: colour varies brick to brick, edges chipped, salt bloom
+    const chip = hash1(id + 3) > 0.86 && mortar < 3.5 ? 1 : 0;
+    const bloom = Math.pow(Math.max(0, f.stain[i]), 1.3);
+    let shade = (0.44 + face * 0.26) * tone;
+    shade *= 1 - grime * 0.20;
+    out.r = shade * tint[0] + bloom * 0.30;
+    out.g = shade * tint[1] + bloom * 0.30;
+    out.b = shade * tint[2] + bloom * 0.32;
+    if (chip) { out.r *= 0.72; out.g *= 0.70; out.b *= 0.68; }
+    out.h = 0.5 + bevel * 0.28 + face * 0.12 - chip * 0.4;
+    out.rough = 0.86 + grime * 0.1 - bloom * 0.1;
+  });
 }
 
 function concrete(size, tint) {
-  const canvas = makeCanvas(size);
-  const ctx = canvas.getContext('2d');
-  const image = ctx.createImageData(size, size);
-  const height = new Float32Array(size * size);
-  const rough = new Float32Array(size * size);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const base = fbm(x * 0.02, y * 0.02, 6) * 0.5 + 0.5;
-      const pits = Math.pow(Math.max(0, fbm(x * 0.16, y * 0.16, 2) * 0.5 + 0.5), 6);
-      const wet = Math.pow(Math.max(0, fbm(x * 0.008 - 20, y * 0.008 + 60, 4) * 0.5 + 0.5), 1.6);
-      // exposed aggregate: bright specks of stone in the cement
-      const stone = fbm(x * 0.28, y * 0.28, 2) * 0.5 + 0.5;
-      const aggregate = stone > 0.74 ? (stone - 0.74) * 3.2 : 0;
-      // horizontal lines where the shuttering boards met when it was poured
-      const shutter = Math.abs(((y % 96) / 96) - 0.5) > 0.482 ? 1 : 0;
-      let shade = 0.42 + base * 0.26 - pits * 0.3 + aggregate * 0.34;
-      shade *= 1 - wet * 0.35;
-      shade *= 1 - shutter * 0.30;
-      const idx = (y * size + x) * 4;
-      image.data[idx] = Math.min(255, shade * tint[0] * 255);
-      image.data[idx + 1] = Math.min(255, shade * tint[1] * 255);
-      image.data[idx + 2] = Math.min(255, shade * tint[2] * 255);
-      image.data[idx + 3] = 255;
-      height[y * size + x] = base * 0.7 - pits * 0.6 + aggregate * 0.4 - shutter * 0.5;
-      rough[y * size + x] = 0.86 - wet * 0.6 + pits * 0.1 - aggregate * 0.25;
-    }
-  }
-  ctx.putImageData(image, 0, 0);
-  return {
-    map: toTexture(canvas, { srgb: true }),
-    normalMap: heightToNormal(height, size, 2.4),
-    roughnessMap: writeGray(rough, size),
-  };
+  const f = plasterFields(size);
+  const agg = field('concrete.agg', size, (x, y) => fbm(x * 0.28, y * 0.28, 2) * 0.5 + 0.5);
+  const pit = field('concrete.pit', size, (x, y) => (
+    Math.pow(Math.max(0, fbm(x * 0.16, y * 0.16, 2) * 0.5 + 0.5), 6)
+  ));
+  return surface(size, { normalStrength: 2.4 }, (x, y, i, out) => {
+    const base = f.base[i];
+    const pits = pit[i];
+    const wet = Math.pow(Math.max(0, f.stain[i]), 0.8);
+    const stone = agg[i];
+    const aggregate = stone > 0.74 ? (stone - 0.74) * 3.2 : 0;
+    const shutter = Math.abs(((y % 96) / 96) - 0.5) > 0.482 ? 1 : 0;
+    let shade = 0.42 + base * 0.26 - pits * 0.3 + aggregate * 0.34;
+    shade *= 1 - wet * 0.35;
+    shade *= 1 - shutter * 0.30;
+    tinted(out, shade, tint);
+    out.h = base * 0.7 - pits * 0.6 + aggregate * 0.4 - shutter * 0.5;
+    out.rough = 0.86 - wet * 0.6 + pits * 0.1 - aggregate * 0.25;
+  });
 }
 
 function rustedMetal(size, tint) {
-  const canvas = makeCanvas(size);
-  const ctx = canvas.getContext('2d');
-  const image = ctx.createImageData(size, size);
-  const height = new Float32Array(size * size);
-  const rough = new Float32Array(size * size);
-  const metal = new Float32Array(size * size);
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const rust = Math.pow(Math.max(0, fbm(x * 0.018, y * 0.018, 5) * 0.5 + 0.5), 1.4);
-      const scratch = Math.abs(fbm(x * 0.4, y * 0.02, 2));
-      const shade = 0.32 + scratch * 0.2;
-      const idx = (y * size + x) * 4;
-      image.data[idx] = Math.min(255, (shade * tint[0] + rust * 0.42) * 255);
-      image.data[idx + 1] = Math.min(255, (shade * tint[1] + rust * 0.18) * 255);
-      image.data[idx + 2] = Math.min(255, (shade * tint[2] + rust * 0.07) * 255);
-      image.data[idx + 3] = 255;
-      height[y * size + x] = rust * 0.5 + scratch * 0.3;
-      rough[y * size + x] = 0.26 + rust * 0.62;
-      metal[y * size + x] = 1 - rust * 0.85;
-    }
-  }
-  ctx.putImageData(image, 0, 0);
-  return {
-    map: toTexture(canvas, { srgb: true }),
-    normalMap: heightToNormal(height, size, 2.0),
-    roughnessMap: writeGray(rough, size),
-    metalnessMap: writeGray(metal, size),
-  };
+  const rustField = field('metal.rust', size, (x, y) => (
+    Math.pow(Math.max(0, fbm(x * 0.018, y * 0.018, 5) * 0.5 + 0.5), 1.4)
+  ));
+  const scratchField = field('metal.scratch', size, (x, y) => Math.abs(fbm(x * 0.4, y * 0.02, 2)));
+  return surface(size, { normalStrength: 2.0, metal: true }, (x, y, i, out) => {
+    const rust = rustField[i];
+    const scratch = scratchField[i];
+    const shade = 0.32 + scratch * 0.2;
+    out.r = shade * tint[0] + rust * 0.42;
+    out.g = shade * tint[1] + rust * 0.18;
+    out.b = shade * tint[2] + rust * 0.07;
+    out.h = rust * 0.5 + scratch * 0.3;
+    out.rough = 0.26 + rust * 0.62;
+    out.metal = 1 - rust * 0.85;
+  });
 }
+
+// --- furnishings ------------------------------------------------------------
+
+/**
+ * A run of book spines. Widths, heights and colours all vary, some volumes
+ * lean, some slots are empty — which is the whole reason a bookcase reads as
+ * a library rather than a striped box.
+ */
+function bookSpines(size) {
+  const f = plasterFields(size);
+  const PALETTE = [
+    [0.30, 0.10, 0.09], [0.14, 0.20, 0.13], [0.28, 0.22, 0.12],
+    [0.10, 0.12, 0.22], [0.34, 0.28, 0.20], [0.19, 0.09, 0.13],
+    [0.24, 0.16, 0.08], [0.12, 0.16, 0.17],
+  ];
+  // lay out the run once so every texel agrees on where each book sits
+  const books = [];
+  for (let s = 0; s < size;) {
+    const id = books.length;
+    const w = 9 + Math.floor(hash1(id * 3.1) * 22);
+    const gap = hash1(id * 7.7) > 0.90;                 // a missing volume
+    books.push({
+      x: s, w, gap,
+      top: 0.06 + hash1(id * 2.3) * 0.16,               // shorter/taller books
+      colour: PALETTE[Math.floor(hash1(id * 5.9) * PALETTE.length) % PALETTE.length],
+      lean: (hash1(id * 11.3) > 0.9 ? (hash1(id * 4.1) - 0.5) * 0.16 : 0),
+      bands: 1 + Math.floor(hash1(id * 13.7) * 3),
+    });
+    s += w;
+  }
+
+  return surface(size, { normalStrength: 2.6 }, (x, y, i, out) => {
+    const v = y / size;
+    let book = books[books.length - 1];
+    for (let b = 0; b < books.length; b += 1) {
+      if (x >= books[b].x && x < books[b].x + books[b].w) { book = books[b]; break; }
+    }
+    const shelfShadow = clamp01((v - 0.86) / 0.14);
+    const lean = book.lean * (1 - v);
+    const u = (x - book.x) / book.w + lean;
+
+    if (book.gap || v < book.top || u < 0.04 || u > 0.96) {
+      // the dark of the shelf behind
+      const d = 0.05 + f.fine[i] * 0.04;
+      tinted(out, d, [1, 0.96, 0.9]);
+      out.h = 0;
+      out.rough = 0.95;
+      return;
+    }
+
+    const c = book.colour;
+    const edge = Math.min(u - 0.04, 0.96 - u) / 0.14;
+    const round = 0.72 + clamp01(edge) * 0.34;          // spines are curved
+    const scuff = 0.86 + f.base[i] * 0.26;
+    let r = c[0] * round * scuff;
+    let g = c[1] * round * scuff;
+    let b = c[2] * round * scuff;
+
+    // gilt bands and a title block near the top of the spine
+    const yy = (v - book.top) / (1 - book.top);
+    let gilt = 0;
+    for (let k = 0; k < book.bands; k += 1) {
+      const at = 0.16 + k * 0.14;
+      gilt = Math.max(gilt, band(Math.abs(yy - at), 0.006, 0.016));
+    }
+    if (yy > 0.26 && yy < 0.40 && u > 0.2 && u < 0.8) {
+      gilt = Math.max(gilt, hash1(Math.floor(yy * 90) + book.x) > 0.55 ? 0.7 : 0);
+    }
+    r = lerp(r, 0.62, gilt); g = lerp(g, 0.50, gilt); b = lerp(b, 0.20, gilt);
+
+    const dark = 1 - shelfShadow * 0.55;
+    out.r = r * dark; out.g = g * dark; out.b = b * dark;
+    out.h = 0.45 + clamp01(edge) * 0.4 + gilt * 0.12;
+    out.rough = 0.62 - gilt * 0.35 + f.fine[i] * 0.12;
+  });
+}
+
+/**
+ * A Persian carpet: guard stripes, a bordered main band, a lobed central
+ * medallion and corner spandrels, worn thin down the middle.
+ */
+function persianRug(size) {
+  const f = plasterFields(size);
+  const GROUND = [0.34, 0.08, 0.07];      // madder red
+  const BORDER = [0.07, 0.10, 0.21];      // indigo
+  const IVORY = [0.62, 0.56, 0.42];
+  const GOLD = [0.46, 0.34, 0.11];
+
+  return surface(size, { normalStrength: 1.5 }, (x, y, i, out) => {
+    const u = x / size;
+    const v = y / size;
+    const edge = Math.min(Math.min(u, 1 - u), Math.min(v, 1 - v));
+
+    let col = GROUND;
+    let motif = 0;
+
+    if (edge < 0.045) col = BORDER;                                 // outer guard
+    else if (edge < 0.065) col = IVORY;
+    else if (edge < 0.155) {
+      col = BORDER;                                                 // main border
+      // a repeating rosette along the band
+      const t = (edge < 0.155 && (u < 0.155 || u > 0.845)) ? v : u;
+      const rep = (t * 14) % 1;
+      motif = band(Math.abs(rep - 0.5) - 0.16, 0, 0.10);
+    } else if (edge < 0.175) col = IVORY;
+    else {
+      // the field: medallion, spandrels, and a scattered herati fill
+      const dx = (u - 0.5) * 2.6;
+      const dy = (v - 0.5) * 1.9;
+      const r = Math.hypot(dx, dy);
+      const th = Math.atan2(dy, dx);
+      const lobe = 0.34 + 0.10 * Math.cos(th * 8);
+      if (r < lobe) {
+        col = BORDER;
+        motif = band(Math.abs(r - lobe * 0.55) - 0.05, 0, 0.05);
+      } else {
+        const cellU = (u * 9) % 1;
+        const cellV = (v * 9) % 1;
+        motif = band(Math.hypot(cellU - 0.5, cellV - 0.5) - 0.14, 0, 0.07) * 0.85;
+      }
+      // corner spandrels
+      const cd = Math.hypot(Math.min(u, 1 - u) - 0.175, Math.min(v, 1 - v) - 0.175);
+      if (cd < 0.10) { col = BORDER; motif = Math.max(motif, band(cd - 0.06, 0, 0.04)); }
+    }
+
+    const pileTone = 0.78 + f.base[i] * 0.34;
+    const wear = clamp01((0.5 - Math.abs(v - 0.5)) * 1.6) * f.grime[i];
+    const r0 = lerp(col[0], GOLD[0], motif) * pileTone;
+    const g0 = lerp(col[1], GOLD[1], motif) * pileTone;
+    const b0 = lerp(col[2], GOLD[2], motif) * pileTone;
+    // trodden pile goes pale and grey
+    out.r = lerp(r0, 0.30, wear * 0.35);
+    out.g = lerp(g0, 0.28, wear * 0.35);
+    out.b = lerp(b0, 0.26, wear * 0.35);
+
+    // knotted pile: a fine grid of tufts
+    const knot = (Math.sin(x * 1.7) * Math.sin(y * 2.1)) * 0.5 + 0.5;
+    out.h = 0.55 + knot * 0.30 + motif * 0.12 - wear * 0.3;
+    out.rough = 0.96 - wear * 0.08;
+  });
+}
+
+/** Diagonal twill — upholstery, curtains and the cast's clothing. */
+function twill(size, tint) {
+  const f = plasterFields(size);
+  return surface(size, { normalStrength: 1.6 }, (x, y, i, out) => {
+    // 2/2 twill: the float steps one thread per pick, giving the diagonal wale
+    const rib = ((x + y) % 4) < 2 ? 1 : 0;
+    const weft = (y % 2) === 0 ? 1 : 0;
+    const thread = 0.82 + rib * 0.20 + weft * 0.05;
+    const slub = f.fine[i];
+    const soil = f.grime[i];
+    const shade = thread * (0.86 + slub * 0.22) * (1 - soil * 0.18);
+    tinted(out, shade, tint);
+    out.h = rib * 0.55 + weft * 0.18 + slub * 0.2;
+    out.rough = 0.92 - rib * 0.06 + slub * 0.06;
+  });
+}
+
+/** Smooth lime ceiling: stipple, hairline cracks and a damp bloom. */
+function ceilingPlaster(size, tint) {
+  const f = plasterFields(size);
+  return surface(size, { normalStrength: 1.3 }, (x, y, i, out) => {
+    const stipple = f.fine[i];
+    const cracked = f.crack[i];
+    const damp = Math.pow(Math.max(0, f.stain[i]), 1.6);
+    let shade = 0.78 + f.base[i] * 0.16 + stipple * 0.06;
+    shade *= 1 - cracked * 0.5;
+    out.r = shade * tint[0] * (1 - damp * 0.30);
+    out.g = shade * tint[1] * (1 - damp * 0.38);
+    out.b = shade * tint[2] * (1 - damp * 0.48);
+    out.h = stipple * 0.28 - cracked * 0.8;
+    out.rough = 0.88 + stipple * 0.08 - damp * 0.2;
+  });
+}
+
+// --- the cast ---------------------------------------------------------------
+
+/** Skin: blotch, pore, and the roughness break that stops it reading as vinyl. */
+function skinSurface(size, tint) {
+  const blotch = field('skin.blotch', size, (x, y) => fbm(x * 0.03, y * 0.03, 4) * 0.5 + 0.5);
+  const pore = field('skin.pore', size, (x, y) => fbm(x * 0.42, y * 0.42, 2) * 0.5 + 0.5);
+  const vein = field('skin.vein', size, (x, y) => Math.abs(fbm(x * 0.02 + 31, y * 0.02 - 7, 3)));
+  return surface(size, { normalStrength: 1.1 }, (x, y, i, out) => {
+    const b = blotch[i];
+    const p = pore[i];
+    const v = band(vein[i], 0.008, 0.04) * 0.35;
+    const shade = 0.86 + b * 0.20 - p * 0.10;
+    // redness pools where the blotch field is high — cheeks, knuckles, ears
+    out.r = shade * tint[0] * (1 + b * 0.10);
+    out.g = shade * tint[1] * (1 - b * 0.05 - v * 0.2);
+    out.b = shade * tint[2] * (1 - b * 0.08 - v * 0.1);
+    out.h = p * 0.30 + b * 0.15 - v * 0.2;
+    out.rough = 0.62 + p * 0.22 - b * 0.10;
+  });
+}
+
+/** Hair: fine directional strands with a specular break along the length. */
+function hairSurface(size, tint) {
+  const strand = field('hair.strand', size, (x, y) => fbm(x * 0.9, y * 0.02, 3) * 0.5 + 0.5);
+  const clump = field('hair.clump', size, (x, y) => fbm(x * 0.06, y * 0.01, 3) * 0.5 + 0.5);
+  return surface(size, { normalStrength: 2.4 }, (x, y, i, out) => {
+    const s = strand[i];
+    const c = clump[i];
+    const shade = 0.55 + s * 0.42 + c * 0.18;
+    tinted(out, shade, tint);
+    out.h = s * 0.7 + c * 0.3;
+    out.rough = 0.44 + (1 - s) * 0.34;
+  });
+}
+
+// --- volumetric / sampling helpers ------------------------------------------
 
 /** Blue-noise-ish dust field sampled by the volumetric raymarch. */
 function dustField(size) {
@@ -54031,21 +54703,96 @@ function blueNoise(size) {
   return texture;
 }
 
+// --- library ----------------------------------------------------------------
+
+const S = 512;      // hero surfaces
+const M = 256;      // supporting surfaces — character skin, hair, cloth
+
+/**
+ * Every surface in the game, in bake order. Architecture first, so that on a
+ * slow machine the surfaces the player will actually be standing in are the
+ * ones that finish first.
+ *
+ * Colourways are NOT baked. A damask is tone-on-tone by construction — the
+ * pattern is carried by sheen and relief, not hue — so one bake serves the
+ * crimson drawing room, the sage library and the ochre bedroom, tinted through
+ * `material.color` in `builder.js`. Same for parquet, twill and skin. Baking
+ * each colourway separately tripled the texture memory for nothing.
+ */
+const RECIPES = [
+  // floors
+  ['woodFloor', () => woodPlanks(S, [0.62, 0.44, 0.3])],
+  ['darkWood', () => woodPlanks(S, [0.34, 0.24, 0.18])],
+  ['parquet', () => parquet(S, [0.62, 0.44, 0.29])],
+  ['marbleCheck', () => marbleCheck(S, [0.86, 0.84, 0.79], [0.19, 0.18, 0.20])],
+  ['marbleSlab', () => marbleSlab(S, [0.84, 0.82, 0.78])],
+  ['quarryTile', () => quarryTile(S, [0.60, 0.31, 0.22])],
+  ['flagstone', () => flagstone(S, [0.56, 0.54, 0.50])],
+  ['tileFloor', () => tiles(S, [0.72, 0.72, 0.68])],
+  ['concrete', () => concrete(S, [0.55, 0.55, 0.56])],
+
+  // wall coverings
+  ['damask', () => paperedWall(S, {
+    ground: [0.36, 0.34, 0.32], pattern: [0.54, 0.51, 0.47], cells: 3, raise: 0.55, sheen: 0.46,
+  })],
+  ['flock', () => paperedWall(S, {
+    ground: [0.30, 0.27, 0.26], pattern: [0.46, 0.42, 0.40], cells: 2,
+    raise: 0.95, sheen: 0.55, damp: 0.6,
+  })],
+  ['floralPaper', () => paperedWall(S, {
+    ground: [0.46, 0.43, 0.39], pattern: [0.60, 0.48, 0.46], cells: 5,
+    motif: floralMotif, raise: 0.3, sheen: 0.30,
+  })],
+  ['wallPaper', () => plaster(S, [0.7, 0.63, 0.52], 0.85)],
+  ['wallStone', () => plaster(S, [0.5, 0.5, 0.52], 0.6)],
+  ['limewash', () => plaster(S, [0.78, 0.76, 0.70], 0.5)],
+  ['oakPanel', () => oakPanel(S, [0.48, 0.34, 0.22])],
+  ['ceilingPlaster', () => ceilingPlaster(S, [0.80, 0.78, 0.72])],
+
+  // masonry
+  ['redBrick', () => brick(S, [0.50, 0.26, 0.20], { courses: 8 })],
+  ['glazedBrick', () => brick(S, [0.86, 0.87, 0.84], { glazed: true, courses: 10 })],
+
+  // furnishings
+  ['bookSpines', () => bookSpines(S)],
+  ['rug', () => persianRug(S)],
+  ['twill', () => twill(S, [0.62, 0.60, 0.58])],
+  ['metal', () => rustedMetal(S, [0.6, 0.62, 0.66])],
+
+  // the cast — finer weave scale than the upholstery, so worth its own bake
+  ['skin', () => skinSurface(M, [0.86, 0.80, 0.74])],
+  ['clothTwill', () => twill(M, [0.66, 0.65, 0.64])],
+  ['hair', () => hairSurface(M, [0.42, 0.36, 0.32])],
+
+  // sampling
+  ['dust', () => dustField(M)],
+  ['noise', () => blueNoise(128)],
+];
+
+const nextFrame = () => new Promise((resolve) => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+  else setTimeout(resolve, 0);
+});
+
 let cache = null;
 
-buildTextureLibrary = function buildTextureLibrary() {
+/**
+ * Bakes every surface, yielding to the browser between each so the loading
+ * screen keeps painting. `onProgress(done, total, name)` drives the readout.
+ */
+buildTextureLibrary = async function buildTextureLibrary(onProgress = null) {
   if (cache) return cache;
-  cache = {
-    woodFloor: woodPlanks(512, [0.62, 0.44, 0.3]),
-    darkWood: woodPlanks(512, [0.34, 0.24, 0.18]),
-    wallPaper: plaster(512, [0.7, 0.63, 0.52], 0.85),
-    wallStone: plaster(512, [0.5, 0.5, 0.52], 0.6),
-    tileFloor: tiles(512, [0.72, 0.72, 0.68]),
-    concrete: concrete(512, [0.55, 0.55, 0.56]),
-    metal: rustedMetal(512, [0.6, 0.62, 0.66]),
-    dust: dustField(256),
-    noise: blueNoise(128),
-  };
+  const library = {};
+  for (let i = 0; i < RECIPES.length; i += 1) {
+    const [name, make] = RECIPES[i];
+    library[name] = make();
+    if (onProgress) onProgress(i + 1, RECIPES.length, name);
+    // let the frame land before starting the next surface
+    if (i % 2 === 1) await nextFrame();
+  }
+  // the base fields are only needed while baking; they are megabytes each
+  FIELDS.clear();
+  cache = library;
   return cache;
 }
 
@@ -57163,13 +57910,21 @@ var TILE, createMaterials, PROPS, Level, buildLevel;
 {
 
 
+
 // ---------------------------------------------------------------------------
-// Turns an ASCII level definition into geometry, collision and a nav grid.
+// Turns a level blueprint into geometry, collision and a nav grid.
+//
+// The blueprint carries a *zone map*: which room owns each tile. That is what
+// lets one chapter render a marble hall, a papered library and a brick cellar
+// instead of one grey box repeated — the room type picks the floor, the wall
+// build-up, the ceiling treatment, the light fixture and the furniture.
 // ---------------------------------------------------------------------------
 
 TILE = 2.6;
 
 const WALL_CHARS = new Set(['#', 'X']);
+
+/** Chars that carry *behaviour* rather than looks. Appearance comes from the room. */
 const FLOOR_TYPES = {
   '.': 'wood',
   ',': 'carpet',
@@ -57178,6 +57933,18 @@ const FLOOR_TYPES = {
   '~': 'water',
   ';': 'grass',
 };
+
+/** Which footstep the audio engine should play on each floor material. */
+const STEP_KIND = {
+  marbleCheck: 'tile', tileFloor: 'tile', quarryTile: 'tile',
+  flagstone: 'concrete', concrete: 'concrete',
+  parquet: 'wood', woodFloor: 'wood', darkWood: 'wood', grass: 'wood',
+  water: 'water', rug: 'carpet', carpet: 'carpet',
+};
+
+const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
+
+// --- material set -----------------------------------------------------------
 
 function mat(textures, key, opts = {}) {
   const set = textures[key];
@@ -57200,30 +57967,66 @@ function mat(textures, key, opts = {}) {
 }
 
 createMaterials = function createMaterials(textures) {
+  const plain = (color, roughness, extra = {}) => {
+    const m = new THREE.MeshStandardMaterial({ color, roughness, metalness: 0, ...extra });
+    m.userData.reflectivity = extra.reflectivity ?? 0.05;
+    return m;
+  };
+
   return {
-    wood: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85, normalScale: 1.4 }),
-    carpet: mat(textures, 'darkWood', { color: 0x6b2f38, reflectivity: 0.04, roughness: 1 }),
-    tile: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45, normalScale: 1.6 }),
+    // --- floors ---
+    woodFloor: mat(textures, 'woodFloor', { reflectivity: 0.28, roughness: 0.85, normalScale: 1.4 }),
+    darkWood: mat(textures, 'darkWood', { reflectivity: 0.2, roughness: 0.75 }),
+    parquet: mat(textures, 'parquet', { reflectivity: 0.42, roughness: 0.55, normalScale: 1.5 }),
+    marbleCheck: mat(textures, 'marbleCheck', { reflectivity: 0.72, roughness: 0.2, normalScale: 0.9 }),
+    marbleSlab: mat(textures, 'marbleSlab', { reflectivity: 0.6, roughness: 0.22, normalScale: 0.7 }),
+    quarryTile: mat(textures, 'quarryTile', { reflectivity: 0.3, roughness: 0.6, normalScale: 1.5 }),
+    flagstone: mat(textures, 'flagstone', { reflectivity: 0.16, roughness: 0.88, normalScale: 1.5 }),
+    tileFloor: mat(textures, 'tileFloor', { reflectivity: 0.55, roughness: 0.45, normalScale: 1.6 }),
     concrete: mat(textures, 'concrete', { reflectivity: 0.12, roughness: 0.95, normalScale: 1.3 }),
+    carpet: mat(textures, 'darkWood', { color: 0x6b2f38, reflectivity: 0.04, roughness: 1 }),
     grass: mat(textures, 'concrete', { color: 0x33422a, reflectivity: 0.08, roughness: 1 }),
-    trim: mat(textures, 'darkWood', { color: 0x6b5744, reflectivity: 0.22, roughness: 0.62 }),
-    stoneTrim: mat(textures, 'wallStone', { color: 0xa39a8c, reflectivity: 0.12, roughness: 0.82 }),
     water: new THREE.MeshStandardMaterial({
       color: 0x25454f, roughness: 0.07, metalness: 0.2, transparent: true, opacity: 0.82,
     }),
+
+    // --- wall coverings ---
+    damask: mat(textures, 'damask', { reflectivity: 0.14, roughness: 0.9, normalScale: 1.3 }),
+    flock: mat(textures, 'flock', { reflectivity: 0.10, roughness: 0.95, normalScale: 1.6 }),
+    floralPaper: mat(textures, 'floralPaper', { reflectivity: 0.08, roughness: 0.95, normalScale: 1.1 }),
     wallPaper: mat(textures, 'wallPaper', { reflectivity: 0.06, roughness: 0.95, normalScale: 1.5 }),
     wallStone: mat(textures, 'wallStone', { color: 0x8f8f96, reflectivity: 0.1, roughness: 0.9, normalScale: 1.5 }),
+    limewash: mat(textures, 'limewash', { reflectivity: 0.05, roughness: 0.97, normalScale: 1.2 }),
+    oakPanel: mat(textures, 'oakPanel', { reflectivity: 0.3, roughness: 0.55, normalScale: 1.5 }),
+    ceilingPlaster: mat(textures, 'ceilingPlaster', { reflectivity: 0.05, roughness: 0.95, normalScale: 1.0 }),
+    redBrick: mat(textures, 'redBrick', { reflectivity: 0.07, roughness: 0.94, normalScale: 1.7 }),
+    glazedBrick: mat(textures, 'glazedBrick', { reflectivity: 0.5, roughness: 0.25, normalScale: 1.4 }),
+
+    // --- joinery and dressing ---
+    trim: mat(textures, 'darkWood', { color: 0x8a705a, reflectivity: 0.22, roughness: 0.62 }),
     panel: mat(textures, 'darkWood', { reflectivity: 0.2, roughness: 0.75 }),
+    stoneTrim: mat(textures, 'wallStone', { color: 0xa39a8c, reflectivity: 0.12, roughness: 0.82 }),
+    books: mat(textures, 'bookSpines', { reflectivity: 0.14, roughness: 0.75, normalScale: 1.2 }),
+    rug: mat(textures, 'rug', { reflectivity: 0.03, roughness: 0.98, normalScale: 1.2 }),
+    upholstery: mat(textures, 'twill', { color: 0x6b3038, reflectivity: 0.05, roughness: 0.94, normalScale: 1.3 }),
+    curtainCloth: mat(textures, 'twill', { color: 0x4a2530, reflectivity: 0.05, roughness: 0.95, normalScale: 1.4 }),
     metal: mat(textures, 'metal', { reflectivity: 0.7, roughness: 0.4, metalness: 1, envMapIntensity: 2.0 }),
+    iron: mat(textures, 'metal', { color: 0x4a4a50, reflectivity: 0.5, roughness: 0.55, metalness: 1, envMapIntensity: 1.5 }),
+    brass: mat(textures, 'metal', { color: 0xb59243, reflectivity: 0.8, roughness: 0.28, metalness: 1, envMapIntensity: 2.2 }),
+    copper: mat(textures, 'metal', { color: 0xa5643c, reflectivity: 0.75, roughness: 0.34, metalness: 1, envMapIntensity: 2.0 }),
     mirror: new THREE.MeshStandardMaterial({
       color: 0x9fb0c0, roughness: 0.02, metalness: 1, envMapIntensity: 2.2,
     }),
     glass: new THREE.MeshStandardMaterial({
       color: 0x88aabb, roughness: 0.05, metalness: 0.4, transparent: true, opacity: 0.35,
     }),
-    cloth: new THREE.MeshStandardMaterial({ color: 0x2a2028, roughness: 1 }),
-    flesh: new THREE.MeshStandardMaterial({ color: 0x6d2b2b, roughness: 0.75 }),
-    bone: new THREE.MeshStandardMaterial({ color: 0xc9bfa4, roughness: 0.6 }),
+    cloth: plain(0x2a2028, 1),
+    // shared so a wall of pictures stays one draw call instead of one each
+    canvasArt: plain(0x3a2a22, 0.92),
+    wax: plain(0xe6d9bd, 0.85),
+    flesh: plain(0x6d2b2b, 0.75),
+    bone: plain(0xc9bfa4, 0.6),
+    coal: plain(0x121014, 0.98),
     gold: new THREE.MeshStandardMaterial({ color: 0xb08a3a, roughness: 0.28, metalness: 1, envMapIntensity: 2.0 }),
     blood: new THREE.MeshStandardMaterial({
       color: 0x4a0d0d, roughness: 0.25, metalness: 0, transparent: true, opacity: 0.92,
@@ -57231,9 +58034,10 @@ createMaterials = function createMaterials(textures) {
   };
 }
 
-// --- procedural props -------------------------------------------------------
+// --- geometry helpers -------------------------------------------------------
 
 const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, s = 10) => new THREE.CylinderGeometry(rt, rb, h, s);
 
 function group(...children) {
   const g = new THREE.Group();
@@ -57250,7 +58054,82 @@ function part(geometry, material, x = 0, y = 0, z = 0, rot = null) {
   return mesh;
 }
 
+/**
+ * Concatenates geometries into one buffer. `mergeGeometries` is not in the
+ * vendored three build, and a furnished manor at one draw call per box runs to
+ * thousands — so props are merged per material on creation.
+ */
+function mergeBuffers(geometries) {
+  const parts = geometries.map((g) => (g.index ? g.toNonIndexed() : g));
+  let count = 0;
+  parts.forEach((g) => { count += g.attributes.position.count; });
+  const position = new Float32Array(count * 3);
+  const normal = new Float32Array(count * 3);
+  const uv = new Float32Array(count * 2);
+  let v = 0;
+  parts.forEach((g) => {
+    const p = g.attributes.position;
+    const n = g.attributes.normal;
+    const t = g.attributes.uv;
+    position.set(p.array.subarray(0, p.count * 3), v * 3);
+    if (n) normal.set(n.array.subarray(0, p.count * 3), v * 3);
+    if (t) uv.set(t.array.subarray(0, p.count * 2), v * 2);
+    v += p.count;
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(position, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/**
+ * Collapses a prop into one mesh per material, keeping its lights and
+ * `userData` intact. Called while the prop still sits at the origin, so the
+ * baked matrices stay local and the caller can position the result freely.
+ */
+function mergeGroup(root) {
+  root.updateMatrixWorld(true);
+  const byMaterial = new Map();
+  const lights = [];
+  root.traverse((o) => {
+    if (o.isMesh) {
+      const key = o.material.uuid;
+      if (!byMaterial.has(key)) byMaterial.set(key, { material: o.material, geos: [] });
+      const g = o.geometry.clone();
+      g.applyMatrix4(o.matrixWorld);
+      byMaterial.get(key).geos.push(g);
+    } else if (o.isLight) {
+      lights.push(o);
+    }
+  });
+
+  const out = new THREE.Group();
+  byMaterial.forEach(({ material, geos }) => {
+    const mesh = new THREE.Mesh(mergeBuffers(geos), material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    out.add(mesh);
+    geos.forEach((g) => g.dispose());
+  });
+  lights.forEach((light) => {
+    light.position.setFromMatrixPosition(light.matrixWorld);
+    light.rotation.set(0, 0, 0);
+    out.add(light);
+  });
+  out.userData = root.userData;
+  return out;
+}
+
+// --- props ------------------------------------------------------------------
+//
+// Each factory returns a Group. `userData.collider` gives the dresser its
+// footprint; `userData.light` marks a fixture; `userData.merge = false` opts a
+// prop out of merging (anything that animates its own children).
+
 PROPS = {
+  // ---- seating and tables ----
   table(m) {
     const g = group(
       part(box(1.7, 0.12, 1.0), m.panel, 0, 0.86),
@@ -57262,6 +58141,26 @@ PROPS = {
     g.userData.collider = { w: 1.8, d: 1.1, h: 1.0 };
     return g;
   },
+  diningTable(m) {
+    const g = group(
+      part(box(3.1, 0.10, 1.25), m.panel, 0, 0.76),
+      part(box(3.0, 0.06, 1.15), m.panel, 0, 0.70),
+      part(box(2.6, 0.09, 0.09), m.panel, 0, 0.30, -0.42),
+      part(box(2.6, 0.09, 0.09), m.panel, 0, 0.30, 0.42),
+    );
+    [[-1.32, -0.46], [1.32, -0.46], [-1.32, 0.46], [1.32, 0.46]].forEach(([x, z]) => {
+      g.add(part(cyl(0.07, 0.10, 0.72, 8), m.panel, x, 0.36, z));
+      g.add(part(box(0.16, 0.14, 0.16), m.panel, x, 0.68, z));      // turned collar
+    });
+    // a runner and a pair of candlesticks left mid-meal
+    g.add(part(box(2.4, 0.015, 0.42), m.curtainCloth, 0, 0.815));
+    [-0.7, 0.7].forEach((x) => {
+      g.add(part(cyl(0.045, 0.075, 0.24, 8), m.brass, x, 0.93));
+      g.add(part(cyl(0.028, 0.032, 0.16, 8), m.wax, x, 1.13));
+    });
+    g.userData.collider = { w: 3.2, d: 1.4, h: 1.0 };
+    return g;
+  },
   chair(m) {
     const g = group(
       part(box(0.5, 0.08, 0.5), m.panel, 0, 0.48),
@@ -57271,10 +58170,77 @@ PROPS = {
       part(box(0.06, 0.48, 0.06), m.panel, -0.2, 0.24, 0.2),
       part(box(0.06, 0.48, 0.06), m.panel, 0.2, 0.24, 0.2),
     );
-    g.rotation.y = Math.random() * Math.PI * 2;
     g.userData.collider = { w: 0.6, d: 0.6, h: 1.2 };
     return g;
   },
+  carverChair(m) {
+    const g = group(
+      part(box(0.50, 0.07, 0.48), m.panel, 0, 0.46),
+      part(box(0.46, 0.05, 0.44), m.upholstery, 0, 0.51),
+      part(box(0.09, 1.05, 0.09), m.panel, -0.21, 0.52, -0.22),
+      part(box(0.09, 1.05, 0.09), m.panel, 0.21, 0.52, -0.22),
+      part(box(0.34, 0.42, 0.04), m.upholstery, 0, 0.86, -0.20),
+      part(box(0.50, 0.09, 0.07), m.panel, 0, 1.04, -0.22),      // crest rail
+    );
+    [[-0.21, 0.21], [0.21, 0.21], [-0.21, -0.22], [0.21, -0.22]].forEach(([x, z], i) => {
+      if (i < 2) g.add(part(cyl(0.035, 0.05, 0.46, 8), m.panel, x, 0.23, z));
+    });
+    g.add(part(box(0.44, 0.05, 0.05), m.panel, 0, 0.14, 0.21));   // stretcher
+    g.userData.collider = { w: 0.58, d: 0.58, h: 1.2 };
+    return g;
+  },
+  wingChair(m) {
+    const g = group(
+      part(box(0.74, 0.34, 0.72), m.upholstery, 0, 0.30),
+      part(box(0.66, 0.14, 0.62), m.upholstery, 0, 0.50),          // seat cushion
+      part(box(0.74, 0.86, 0.16), m.upholstery, 0, 0.78, -0.31),   // back
+      part(box(0.14, 0.62, 0.66), m.upholstery, -0.31, 0.66, 0.02),
+      part(box(0.14, 0.62, 0.66), m.upholstery, 0.31, 0.66, 0.02),
+      part(box(0.16, 0.34, 0.22), m.upholstery, -0.31, 1.02, -0.20),  // wings
+      part(box(0.16, 0.34, 0.22), m.upholstery, 0.31, 1.02, -0.20),
+    );
+    [[-0.30, 0.28], [0.30, 0.28], [-0.30, -0.28], [0.30, -0.28]].forEach(([x, z]) => {
+      g.add(part(box(0.08, 0.14, 0.08), m.panel, x, 0.07, z));
+    });
+    g.userData.collider = { w: 0.85, d: 0.85, h: 1.2 };
+    return g;
+  },
+  chaise(m) {
+    const g = group(
+      part(box(1.90, 0.30, 0.72), m.upholstery, 0, 0.36),
+      part(box(1.84, 0.14, 0.66), m.upholstery, 0, 0.56),
+      part(box(0.18, 0.74, 0.72), m.upholstery, -0.86, 0.78, 0),   // raised head end
+      part(box(1.0, 0.46, 0.14), m.upholstery, -0.35, 0.72, -0.32),
+      part(box(0.16, 0.10, 0.62), m.panel, -0.90, 0.16, 0),
+    );
+    [[-0.80, 0.30], [0.86, 0.30], [-0.80, -0.30], [0.86, -0.30]].forEach(([x, z]) => {
+      g.add(part(cyl(0.045, 0.055, 0.20, 8), m.panel, x, 0.10, z));
+    });
+    g.userData.collider = { w: 2.0, d: 0.85, h: 1.0 };
+    return g;
+  },
+  footstool(m) {
+    const g = group(
+      part(box(0.44, 0.14, 0.36), m.upholstery, 0, 0.30),
+      part(box(0.40, 0.06, 0.32), m.panel, 0, 0.22),
+    );
+    [[-0.16, 0.13], [0.16, 0.13], [-0.16, -0.13], [0.16, -0.13]].forEach(([x, z]) => {
+      g.add(part(cyl(0.025, 0.032, 0.20, 6), m.panel, x, 0.10, z));
+    });
+    g.userData.collider = { w: 0.5, d: 0.42, h: 0.4 };
+    return g;
+  },
+  sideTable(m) {
+    const g = group(
+      part(cyl(0.34, 0.34, 0.06, 14), m.panel, 0, 0.72),
+      part(cyl(0.05, 0.06, 0.68, 8), m.panel, 0, 0.36),
+      part(cyl(0.24, 0.26, 0.05, 12), m.panel, 0, 0.03),
+    );
+    g.userData.collider = { w: 0.7, d: 0.7, h: 0.8 };
+    return g;
+  },
+
+  // ---- storage ----
   shelf(m) {
     const g = group(
       part(box(1.6, 2.2, 0.1), m.panel, 0, 1.1, -0.2),
@@ -57287,17 +58253,682 @@ PROPS = {
     g.userData.collider = { w: 1.7, d: 0.6, h: 2.2 };
     return g;
   },
-  crate(m) {
+  bookcase(m) {
+    const H = 2.55;
+    const g = group(
+      part(box(1.5, H, 0.08), m.panel, 0, H / 2, -0.24),        // back
+      part(box(0.09, H, 0.52), m.panel, -0.70, H / 2, 0),
+      part(box(0.09, H, 0.52), m.panel, 0.70, H / 2, 0),
+      part(box(1.5, 0.10, 0.56), m.panel, 0, H - 0.05, 0.02),   // cornice
+      part(box(1.6, 0.13, 0.62), m.trim, 0, H + 0.02, 0.03),
+      part(box(1.5, 0.16, 0.54), m.panel, 0, 0.08, 0),          // plinth
+    );
+    // five shelves, each with a run of books
+    for (let i = 0; i < 5; i += 1) {
+      const y = 0.30 + i * 0.46;
+      g.add(part(box(1.36, 0.045, 0.50), m.panel, 0, y, 0));
+      const fill = 0.60 + ((i * 7) % 5) * 0.08;                 // some shelves thin out
+      g.add(part(box(1.30 * fill, 0.36, 0.30), m.books,
+        -0.65 + (1.30 * fill) / 2 + 0.02, y + 0.20, -0.06));
+    }
+    g.userData.collider = { w: 1.6, d: 0.65, h: 2.6 };
+    return g;
+  },
+  larderShelf(m) {
+    const g = group(
+      part(box(0.08, 1.9, 0.42), m.panel, -0.62, 0.95, 0),
+      part(box(0.08, 1.9, 0.42), m.panel, 0.62, 0.95, 0),
+    );
+    for (let i = 0; i < 4; i += 1) {
+      const y = 0.45 + i * 0.45;
+      g.add(part(box(1.3, 0.04, 0.42), m.panel, 0, y, 0));
+      // crocks and jars, a couple missing
+      for (let j = -1; j <= 1; j += 1) {
+        if ((i * 3 + j + 4) % 5 === 0) continue;
+        g.add(part(cyl(0.09, 0.10, 0.20, 8), m.bone, j * 0.38, y + 0.12, 0));
+      }
+    }
+    g.userData.collider = { w: 1.4, d: 0.5, h: 1.9 };
+    return g;
+  },
+  sideboard(m) {
+    const g = group(
+      part(box(2.0, 0.10, 0.66), m.marbleSlab, 0, 0.94),          // marble top
+      part(box(1.9, 0.80, 0.60), m.panel, 0, 0.50),
+      part(box(1.9, 0.14, 0.62), m.panel, 0, 0.08),
+      part(box(1.9, 0.70, 0.06), m.panel, 0, 1.55, -0.28),        // back board
+      part(box(2.0, 0.10, 0.12), m.trim, 0, 1.92, -0.28),
+    );
+    [-0.62, 0, 0.62].forEach((x) => {
+      g.add(part(box(0.54, 0.34, 0.03), m.trim, x, 0.72, 0.31));  // drawer fronts
+      g.add(part(cyl(0.03, 0.03, 0.03, 8), m.brass, x, 0.72, 0.34, [Math.PI / 2, 0, 0]));
+      g.add(part(box(0.54, 0.36, 0.03), m.trim, x, 0.34, 0.31));
+    });
+    // a decanter and glasses on the marble
+    g.add(part(cyl(0.07, 0.09, 0.22, 8), m.glass, -0.6, 1.10));
+    [0.1, 0.26, 0.42].forEach((x) => g.add(part(cyl(0.04, 0.03, 0.10, 6), m.glass, x, 1.04)));
+    g.userData.collider = { w: 2.1, d: 0.75, h: 1.0 };
+    return g;
+  },
+  kitchenDresser(m) {
+    const g = group(
+      part(box(1.8, 0.90, 0.58), m.panel, 0, 0.50),
+      part(box(1.86, 0.08, 0.64), m.panel, 0, 0.98),
+      part(box(1.8, 0.12, 0.60), m.panel, 0, 0.06),
+      part(box(1.7, 1.5, 0.06), m.panel, 0, 1.78, -0.24),
+      part(box(0.08, 1.5, 0.32), m.panel, -0.81, 1.78, -0.10),
+      part(box(0.08, 1.5, 0.32), m.panel, 0.81, 1.78, -0.10),
+      part(box(1.86, 0.11, 0.40), m.trim, 0, 2.55, -0.08),
+    );
+    // three plate shelves, plates stood on edge
+    for (let i = 0; i < 3; i += 1) {
+      const y = 1.28 + i * 0.44;
+      g.add(part(box(1.66, 0.04, 0.30), m.panel, 0, y, -0.10));
+      for (let j = -2; j <= 2; j += 1) {
+        g.add(part(cyl(0.14, 0.14, 0.02, 12), m.bone, j * 0.33, y + 0.16, -0.20, [Math.PI / 2, 0, 0]));
+      }
+    }
+    [-0.45, 0.45].forEach((x) => {
+      g.add(part(box(0.76, 0.60, 0.03), m.trim, x, 0.46, 0.30));
+      g.add(part(cyl(0.025, 0.025, 0.05, 8), m.brass, x + 0.28, 0.46, 0.33, [Math.PI / 2, 0, 0]));
+    });
+    g.userData.collider = { w: 1.9, d: 0.7, h: 2.6 };
+    return g;
+  },
+  wardrobe(m) {
+    const g = group(
+      part(box(1.35, 2.20, 0.62), m.panel, 0, 1.12),
+      part(box(1.45, 0.14, 0.72), m.trim, 0, 2.28),               // cornice
+      part(box(1.40, 0.16, 0.68), m.trim, 0, 0.08),               // plinth
+    );
+    [-0.34, 0.34].forEach((x, i) => {
+      g.add(part(box(0.60, 1.80, 0.04), m.trim, x, 1.20, 0.32));
+      g.add(part(box(0.44, 1.50, 0.02), m.panel, x, 1.20, 0.345));
+      g.add(part(cyl(0.022, 0.022, 0.09, 8), m.brass,
+        x + (i ? -0.24 : 0.24), 1.15, 0.38, [Math.PI / 2, 0, 0]));
+    });
+    g.userData.collider = { w: 1.45, d: 0.75, h: 2.3 };
+    return g;
+  },
+  wineRack(m) {
+    const g = group(
+      part(box(0.10, 1.9, 0.52), m.panel, -0.62, 0.95, 0),
+      part(box(0.10, 1.9, 0.52), m.panel, 0.62, 0.95, 0),
+    );
+    for (let i = 0; i < 5; i += 1) {
+      const y = 0.30 + i * 0.38;
+      g.add(part(box(1.26, 0.05, 0.50), m.panel, 0, y, 0));
+      for (let j = 0; j < 5; j += 1) {
+        if ((i * 5 + j) % 7 === 0) continue;                      // a few gone
+        g.add(part(cyl(0.055, 0.055, 0.30, 8), m.glass,
+          -0.5 + j * 0.25, y + 0.10, 0, [Math.PI / 2, 0, 0]));
+      }
+    }
+    g.userData.collider = { w: 1.35, d: 0.6, h: 1.9 };
+    return g;
+  },
+  crate(m, variant = 0) {
     const g = group(part(box(0.9, 0.9, 0.9), m.panel, 0, 0.45));
-    g.rotation.y = Math.random() * Math.PI;
+    g.rotation.y = (variant % 3) * 0.4;
+    [-0.44, 0.44].forEach((z) => {
+      g.add(part(box(0.94, 0.08, 0.04), m.trim, 0, 0.78, z));
+      g.add(part(box(0.94, 0.08, 0.04), m.trim, 0, 0.14, z));
+    });
     g.userData.collider = { w: 1.0, d: 1.0, h: 0.9 };
     return g;
   },
   barrel(m) {
-    const geo = new THREE.CylinderGeometry(0.42, 0.42, 1.05, 14);
-    const g = group(part(geo, m.metal, 0, 0.53));
+    const g = group(
+      part(cyl(0.36, 0.42, 1.05, 14), m.panel, 0, 0.53),
+      part(new THREE.TorusGeometry(0.42, 0.03, 6, 16), m.iron, 0, 0.28, 0, [Math.PI / 2, 0, 0]),
+      part(new THREE.TorusGeometry(0.42, 0.03, 6, 16), m.iron, 0, 0.78, 0, [Math.PI / 2, 0, 0]),
+      part(cyl(0.35, 0.35, 0.03, 12), m.panel, 0, 1.06),
+    );
     g.userData.collider = { w: 0.9, d: 0.9, h: 1.05 };
     return g;
+  },
+
+  // ---- desks, beds, washing ----
+  readingDesk(m) {
+    const g = group(
+      part(box(1.6, 0.08, 0.86), m.panel, 0, 0.76),
+      part(box(1.46, 0.02, 0.74), m.upholstery, 0, 0.805),        // leather inset
+      part(box(0.44, 0.52, 0.72), m.panel, -0.54, 0.44, 0),       // pedestals
+      part(box(0.44, 0.52, 0.72), m.panel, 0.54, 0.44, 0),
+      part(box(1.6, 0.10, 0.90), m.trim, 0, 0.14),
+    );
+    [-0.54, 0.54].forEach((x) => {
+      [0.30, 0.52].forEach((y) => {
+        g.add(part(box(0.38, 0.18, 0.03), m.trim, x, y, 0.37));
+        g.add(part(cyl(0.02, 0.02, 0.04, 8), m.brass, x, y, 0.40, [Math.PI / 2, 0, 0]));
+      });
+    });
+    // an open ledger and an inkwell
+    g.add(part(box(0.42, 0.03, 0.30), m.bone, 0.1, 0.82, 0.02, [0, 0.2, 0]));
+    g.add(part(cyl(0.05, 0.06, 0.09, 8), m.glass, -0.45, 0.85));
+    g.userData.collider = { w: 1.7, d: 1.0, h: 0.9 };
+    return g;
+  },
+  dressingTable(m) {
+    const g = group(
+      part(box(1.1, 0.07, 0.50), m.panel, 0, 0.74),
+      part(box(1.0, 0.28, 0.44), m.panel, 0, 0.58),
+      part(box(0.70, 0.80, 0.04), m.panel, 0, 1.20, -0.20),
+      part(box(0.58, 0.66, 0.02), m.mirror, 0, 1.22, -0.17),
+    );
+    [-0.42, 0.42].forEach((x) => g.add(part(cyl(0.035, 0.05, 0.54, 8), m.panel, x, 0.27, 0.16)));
+    g.add(part(cyl(0.04, 0.05, 0.12, 8), m.glass, 0.32, 0.83, 0.05));
+    g.userData.collider = { w: 1.2, d: 0.6, h: 0.9 };
+    return g;
+  },
+  brassBed(m) {
+    const g = group(
+      part(box(1.42, 0.16, 2.05), m.panel, 0, 0.46),
+      part(box(1.36, 0.22, 1.98), m.cloth, 0, 0.63),              // mattress
+      part(box(1.36, 0.08, 1.30), m.curtainCloth, 0, 0.75, 0.30), // counterpane
+      part(box(0.62, 0.16, 0.36), m.bone, -0.30, 0.80, -0.78),    // pillows
+      part(box(0.62, 0.16, 0.36), m.bone, 0.32, 0.80, -0.78),
+    );
+    // brass head and foot: posts, rails and turned spindles
+    [[-1.03, 1.15], [1.03, 0.78]].forEach(([z, top]) => {
+      [-0.66, 0.66].forEach((x) => g.add(part(cyl(0.035, 0.035, top, 10), m.brass, x, top / 2, z)));
+      [-0.66, 0.66].forEach((x) => g.add(part(new THREE.SphereGeometry(0.055, 10, 8), m.brass, x, top, z)));
+      g.add(part(cyl(0.028, 0.028, 1.32, 8), m.brass, 0, top - 0.06, z, [0, 0, Math.PI / 2]));
+      g.add(part(cyl(0.028, 0.028, 1.32, 8), m.brass, 0, top * 0.55, z, [0, 0, Math.PI / 2]));
+      for (let i = -2; i <= 2; i += 1) {
+        g.add(part(cyl(0.018, 0.018, top * 0.45, 6), m.brass, i * 0.24, top * 0.78, z));
+      }
+    });
+    g.userData.collider = { w: 1.5, d: 2.2, h: 1.2 };
+    return g;
+  },
+  washstand(m) {
+    const g = group(
+      part(box(0.94, 0.08, 0.48), m.marbleSlab, 0, 0.86),
+      part(box(0.86, 0.60, 0.42), m.panel, 0, 0.54),
+      part(box(0.90, 0.10, 0.46), m.panel, 0, 0.08),
+      part(box(0.94, 0.34, 0.05), m.marbleSlab, 0, 1.05, -0.22),  // splash back
+      part(cyl(0.19, 0.15, 0.13, 14), m.bone, -0.16, 0.96),       // basin
+      part(cyl(0.11, 0.13, 0.24, 12), m.bone, 0.26, 1.02),        // ewer
+    );
+    g.userData.collider = { w: 1.0, d: 0.6, h: 1.0 };
+    return g;
+  },
+  workbench(m) {
+    const g = group(
+      part(box(1.9, 0.10, 0.66), m.panel, 0, 0.88),
+      part(box(0.14, 0.88, 0.14), m.panel, -0.85, 0.44, -0.24),
+      part(box(0.14, 0.88, 0.14), m.panel, 0.85, 0.44, -0.24),
+      part(box(0.14, 0.88, 0.14), m.panel, -0.85, 0.44, 0.24),
+      part(box(0.14, 0.88, 0.14), m.panel, 0.85, 0.44, 0.24),
+      part(box(1.7, 0.05, 0.30), m.panel, 0, 0.28, -0.18),
+      part(box(0.26, 0.22, 0.18), m.iron, 0.70, 0.99, 0.20),      // vice
+      part(cyl(0.022, 0.022, 0.30, 6), m.iron, 0.70, 0.99, 0.38, [0, 0, Math.PI / 2]),
+    );
+    // tools hung on the wall board behind
+    g.add(part(box(1.7, 0.7, 0.03), m.panel, 0, 1.35, -0.31));
+    [-0.5, -0.1, 0.3].forEach((x, i) => {
+      g.add(part(box(0.05, 0.34 + i * 0.06, 0.03), m.iron, x, 1.32, -0.28));
+    });
+    g.userData.collider = { w: 2.0, d: 0.8, h: 1.6 };
+    return g;
+  },
+
+  // ---- kitchen and service ----
+  range(m) {
+    const g = group(
+      part(box(1.5, 1.02, 0.72), m.iron, 0, 0.51),
+      part(box(1.56, 0.08, 0.78), m.iron, 0, 1.05),
+      part(box(1.34, 0.44, 0.04), m.iron, 0, 0.62, 0.37),         // oven door
+      part(cyl(0.03, 0.03, 0.9, 8), m.brass, 0, 0.44, 0.41, [0, 0, Math.PI / 2]),
+      part(box(1.34, 0.26, 0.04), m.iron, 0, 0.22, 0.37),
+      part(box(1.7, 1.9, 0.30), m.redBrick, 0, 0.95, -0.48),      // chimney breast
+      part(box(1.9, 0.16, 0.44), m.stoneTrim, 0, 1.86, -0.42),
+    );
+    // hotplates and a kettle
+    [-0.38, 0.38].forEach((x) => g.add(part(cyl(0.20, 0.20, 0.03, 14), m.iron, x, 1.10, -0.02)));
+    g.add(part(cyl(0.13, 0.16, 0.20, 10), m.copper, -0.38, 1.21));
+    g.add(part(new THREE.TorusGeometry(0.09, 0.012, 5, 10), m.copper, -0.38, 1.33, 0, [0, 0, 0]));
+    const glow = new THREE.PointLight(0xff6a22, 6, 4.5, 1.8);
+    glow.position.set(0, 0.55, 0.5);
+    g.add(glow);
+    g.userData.light = glow;
+    g.userData.flicker = true;
+    g.userData.collider = { w: 1.9, d: 1.0, h: 1.9 };
+    return g;
+  },
+  stoneSink(m) {
+    const g = group(
+      part(box(1.05, 0.42, 0.60), m.stoneTrim, 0, 0.68),
+      part(box(0.88, 0.30, 0.46), m.cloth, 0, 0.76),              // the dark of the basin
+      part(box(0.16, 0.66, 0.16), m.stoneTrim, -0.42, 0.33, 0),
+      part(box(0.16, 0.66, 0.16), m.stoneTrim, 0.42, 0.33, 0),
+      part(cyl(0.028, 0.028, 0.46, 8), m.brass, 0, 1.10, -0.22),
+      part(cyl(0.022, 0.022, 0.20, 8), m.brass, 0, 1.30, -0.13, [Math.PI / 2.4, 0, 0]),
+    );
+    g.userData.collider = { w: 1.15, d: 0.7, h: 1.1 };
+    return g;
+  },
+  potRack(m) {
+    const g = group(
+      part(box(1.4, 0.06, 0.06), m.iron, 0, 0, 0),
+      part(box(0.06, 0.06, 0.5), m.iron, -0.66, 0, 0),
+      part(box(0.06, 0.06, 0.5), m.iron, 0.66, 0, 0),
+    );
+    [-0.5, -0.17, 0.17, 0.5].forEach((x, i) => {
+      g.add(part(cyl(0.012, 0.012, 0.22, 5), m.iron, x, -0.11, 0));
+      const r = 0.11 + (i % 2) * 0.05;
+      g.add(part(cyl(r, r * 0.86, 0.18, 10), m.copper, x, -0.31, 0));
+    });
+    g.userData.hangs = true;
+    return g;
+  },
+  pot(m, variant = 0) {
+    const r = 0.11 + (variant % 3) * 0.03;
+    const g = group(
+      part(cyl(r, r * 0.86, 0.20, 10), m.copper, 0, 0.10),
+      part(new THREE.TorusGeometry(r * 0.9, 0.012, 5, 10), m.copper, 0, 0.20, 0, [Math.PI / 2, 0, 0]),
+    );
+    g.userData.collider = { w: 0.3, d: 0.3, h: 0.25 };
+    return g;
+  },
+  bottle(m) {
+    const g = group(
+      part(cyl(0.045, 0.055, 0.20, 8), m.glass, 0, 0.10),
+      part(cyl(0.018, 0.032, 0.12, 6), m.glass, 0, 0.24),
+      part(cyl(0.020, 0.020, 0.03, 6), m.trim, 0, 0.31),
+    );
+    return g;
+  },
+  clothPile(m) {
+    const g = group(
+      part(box(0.52, 0.12, 0.40), m.curtainCloth, 0, 0.06, 0, [0, 0.3, 0]),
+      part(box(0.44, 0.10, 0.34), m.cloth, 0.04, 0.16, 0.02, [0, -0.4, 0]),
+      part(box(0.36, 0.09, 0.28), m.curtainCloth, -0.03, 0.24, -0.02, [0, 0.8, 0]),
+    );
+    return g;
+  },
+  coalPile(m) {
+    const g = new THREE.Group();
+    for (let i = 0; i < 18; i += 1) {
+      const a = (i / 18) * Math.PI * 2;
+      const r = 0.15 + (i % 5) * 0.13;
+      g.add(part(new THREE.IcosahedronGeometry(0.09 + (i % 3) * 0.05, 0), m.coal,
+        Math.cos(a) * r, 0.06 + (i % 4) * 0.07, Math.sin(a) * r,
+        [i * 0.7, i * 1.3, i * 0.4]));
+    }
+    g.userData.collider = { w: 1.1, d: 1.1, h: 0.5 };
+    return g;
+  },
+  boiler(m) {
+    const g = group(
+      part(cyl(0.55, 0.55, 1.7, 16), m.iron, 0, 0.85),
+      part(cyl(0.58, 0.58, 0.10, 16), m.iron, 0, 1.72),
+      part(new THREE.TorusGeometry(0.56, 0.04, 6, 18), m.iron, 0, 0.45, 0, [Math.PI / 2, 0, 0]),
+      part(new THREE.TorusGeometry(0.56, 0.04, 6, 18), m.iron, 0, 1.25, 0, [Math.PI / 2, 0, 0]),
+      part(cyl(0.26, 0.26, 0.06, 12), m.iron, 0, 0.62, 0.55, [Math.PI / 2, 0, 0]),  // firebox door
+      part(cyl(0.09, 0.09, 1.4, 8), m.iron, 0.72, 1.1, 0),                          // flue
+      part(cyl(0.09, 0.09, 0.8, 8), m.iron, 0.36, 1.78, 0, [0, 0, Math.PI / 2]),
+      part(cyl(0.10, 0.10, 0.04, 12), m.brass, -0.30, 1.20, 0.50, [Math.PI / 2, 0, 0]),
+    );
+    const glow = new THREE.PointLight(0xff5a1e, 8, 5, 1.8);
+    glow.position.set(0, 0.62, 0.7);
+    g.add(glow);
+    g.userData.light = glow;
+    g.userData.flicker = true;
+    g.userData.collider = { w: 1.3, d: 1.3, h: 1.9 };
+    return g;
+  },
+
+  // ---- fixed joinery and wall furniture ----
+  chimneypiece(m) {
+    const g = group(
+      part(box(2.0, 0.14, 0.42), m.marbleSlab, 0, 1.24),          // mantel shelf
+      part(box(0.30, 1.18, 0.34), m.marbleSlab, -0.78, 0.59, 0),  // jambs
+      part(box(0.30, 1.18, 0.34), m.marbleSlab, 0.78, 0.59, 0),
+      part(box(1.30, 0.22, 0.34), m.marbleSlab, 0, 1.06, 0),      // frieze
+      part(box(1.28, 0.98, 0.24), m.cloth, 0, 0.49, -0.06),       // the opening
+      part(box(1.20, 0.10, 0.30), m.stoneTrim, 0, 0.05, 0.04),    // hearth
+      part(box(1.10, 0.36, 0.06), m.iron, 0, 0.20, -0.02),        // grate
+    );
+    for (let i = -4; i <= 4; i += 1) {
+      g.add(part(box(0.03, 0.30, 0.03), m.iron, i * 0.12, 0.20, 0.06));
+    }
+    // an overmantel mirror, and a clock and candlesticks on the shelf
+    g.add(part(box(1.10, 1.00, 0.06), m.trim, 0, 1.92, -0.14));
+    g.add(part(box(0.94, 0.84, 0.02), m.mirror, 0, 1.92, -0.10));
+    g.add(part(box(0.26, 0.30, 0.16), m.panel, 0, 1.46, 0));
+    g.add(part(cyl(0.10, 0.10, 0.02, 12), m.bone, 0, 1.50, 0.09, [Math.PI / 2, 0, 0]));
+    [-0.62, 0.62].forEach((x) => {
+      g.add(part(cyl(0.04, 0.07, 0.20, 8), m.brass, x, 1.41));
+      g.add(part(cyl(0.026, 0.030, 0.14, 8), m.wax, x, 1.58));
+    });
+    const glow = new THREE.PointLight(0xff7a2e, 5, 4.5, 1.8);
+    glow.position.set(0, 0.30, 0.35);
+    g.add(glow);
+    g.userData.light = glow;
+    g.userData.flicker = true;
+    g.userData.collider = { w: 2.1, d: 0.55, h: 2.4 };
+    return g;
+  },
+  longcaseClock(m) {
+    const g = group(
+      part(box(0.52, 1.40, 0.30), m.panel, 0, 0.72),              // trunk
+      part(box(0.40, 0.90, 0.03), m.glass, 0, 0.86, 0.16),
+      part(box(0.60, 0.22, 0.36), m.trim, 0, 1.50),
+      part(box(0.58, 0.62, 0.34), m.panel, 0, 1.90),              // hood
+      part(box(0.66, 0.14, 0.40), m.trim, 0, 2.26),
+      part(cyl(0.05, 0.05, 0.16, 8), m.brass, 0, 2.40),
+      part(new THREE.SphereGeometry(0.055, 10, 8), m.brass, 0, 2.50),
+      part(box(0.58, 0.20, 0.34), m.panel, 0, 0.10),              // plinth
+    );
+    // dial, hands and the pendulum behind the glass
+    g.add(part(cyl(0.19, 0.19, 0.03, 20), m.bone, 0, 1.92, 0.16, [Math.PI / 2, 0, 0]));
+    g.add(part(new THREE.TorusGeometry(0.19, 0.018, 6, 20), m.brass, 0, 1.92, 0.17));
+    g.add(part(box(0.015, 0.14, 0.01), m.iron, 0, 1.98, 0.19));
+    g.add(part(box(0.10, 0.014, 0.01), m.iron, 0.04, 1.92, 0.19, [0, 0, 0.5]));
+    g.add(part(cyl(0.008, 0.008, 0.80, 6), m.brass, 0, 0.90, 0.02));
+    g.add(part(cyl(0.09, 0.09, 0.015, 14), m.brass, 0, 0.50, 0.02, [Math.PI / 2, 0, 0]));
+    g.userData.collider = { w: 0.7, d: 0.45, h: 2.5 };
+    return g;
+  },
+  hallStand(m) {
+    const g = group(
+      part(box(1.20, 0.08, 0.36), m.panel, 0, 0.80),              // shelf
+      part(box(1.10, 0.30, 0.32), m.panel, 0, 0.62),              // glove drawer
+      part(box(1.24, 1.70, 0.06), m.panel, 0, 1.70, -0.16),       // back board
+      part(box(0.70, 0.90, 0.02), m.mirror, 0, 1.72, -0.12),
+      part(box(1.32, 0.12, 0.14), m.trim, 0, 2.58, -0.14),
+      part(box(0.16, 0.80, 0.30), m.panel, -0.56, 0.40, 0),
+      part(box(0.16, 0.80, 0.30), m.panel, 0.56, 0.40, 0),
+    );
+    [-0.50, -0.28, 0.28, 0.50].forEach((x, i) => {
+      g.add(part(cyl(0.018, 0.018, 0.13, 6), m.brass, x, 2.30 - (i % 2) * 0.18, -0.10, [Math.PI / 2.5, 0, 0]));
+      g.add(part(new THREE.SphereGeometry(0.030, 8, 6), m.brass, x, 2.24 - (i % 2) * 0.18, -0.03));
+    });
+    // a coat still hanging, and a stick in the well
+    g.add(part(box(0.40, 0.90, 0.16), m.curtainCloth, -0.39, 1.70, 0.02));
+    g.add(part(cyl(0.018, 0.018, 0.80, 6), m.panel, 0.58, 0.42, 0.02, [0.10, 0, 0.06]));
+    g.userData.collider = { w: 1.35, d: 0.5, h: 2.6 };
+    return g;
+  },
+  coatHooks(m) {
+    const g = group(part(box(1.10, 0.16, 0.05), m.panel, 0, 0, 0));
+    [-0.40, -0.13, 0.13, 0.40].forEach((x) => {
+      g.add(part(cyl(0.014, 0.014, 0.11, 6), m.brass, x, -0.02, 0.06, [Math.PI / 2.3, 0, 0]));
+      g.add(part(new THREE.SphereGeometry(0.024, 8, 6), m.brass, x, -0.06, 0.10));
+    });
+    g.add(part(box(0.36, 0.80, 0.14), m.curtainCloth, -0.13, -0.44, 0.10));
+    g.userData.hangs = true;
+    return g;
+  },
+  bellBoard(m) {
+    const g = group(part(box(1.30, 0.44, 0.05), m.panel, 0, 0, 0));
+    for (let i = -3; i <= 3; i += 1) {
+      g.add(part(new THREE.SphereGeometry(0.055, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+        m.brass, i * 0.18, 0.12, 0.06, [Math.PI, 0, 0]));
+      g.add(part(cyl(0.006, 0.006, 0.14, 4), m.iron, i * 0.18, 0.19, 0.06));
+      g.add(part(box(0.13, 0.07, 0.01), m.bone, i * 0.18, -0.10, 0.055));
+    }
+    g.userData.hangs = true;
+    return g;
+  },
+  umbrellaStand(m) {
+    const g = group(
+      part(cyl(0.20, 0.22, 0.60, 12), m.copper, 0, 0.30),
+      part(new THREE.TorusGeometry(0.20, 0.02, 6, 14), m.copper, 0, 0.58, 0, [Math.PI / 2, 0, 0]),
+      part(cyl(0.014, 0.014, 0.78, 6), m.panel, 0.05, 0.55, 0.03, [0.10, 0, 0.08]),
+      part(cyl(0.014, 0.014, 0.72, 6), m.panel, -0.04, 0.52, -0.03, [-0.08, 0, -0.10]),
+    );
+    g.userData.collider = { w: 0.5, d: 0.5, h: 0.7 };
+    return g;
+  },
+  librarySteps(m) {
+    const g = new THREE.Group();
+    for (let i = 0; i < 4; i += 1) {
+      g.add(part(box(0.60, 0.05, 0.34), m.panel, 0, 0.22 + i * 0.22, -i * 0.16));
+    }
+    [-0.28, 0.28].forEach((x) => {
+      g.add(part(box(0.06, 0.94, 0.06), m.panel, x, 0.47, 0.16, [-0.35, 0, 0]));
+      g.add(part(box(0.06, 0.72, 0.06), m.panel, x, 0.36, -0.44, [0.30, 0, 0]));
+    });
+    g.userData.collider = { w: 0.7, d: 0.8, h: 1.0 };
+    return g;
+  },
+  globe(m) {
+    const g = group(
+      part(new THREE.SphereGeometry(0.26, 16, 12), m.bone, 0, 1.02),
+      part(new THREE.TorusGeometry(0.29, 0.018, 6, 20), m.brass, 0, 1.02, 0, [0, 0, 0.35]),
+      part(cyl(0.028, 0.032, 0.72, 8), m.panel, 0, 0.40),
+      part(cyl(0.20, 0.22, 0.05, 12), m.panel, 0, 0.05),
+    );
+    g.userData.collider = { w: 0.6, d: 0.6, h: 1.3 };
+    return g;
+  },
+  bookStack(m) {
+    const g = new THREE.Group();
+    let y = 0;
+    for (let i = 0; i < 4; i += 1) {
+      const h = 0.05 + (i % 3) * 0.015;
+      g.add(part(box(0.26 - i * 0.015, h, 0.19), m.books, 0, y + h / 2, 0, [0, i * 0.25, 0]));
+      y += h;
+    }
+    return g;
+  },
+  pictureFrame(m, variant = 0) {
+    const w = 0.7 + (variant % 3) * 0.22;
+    const h = w * [1.30, 0.86, 1.05][variant % 3];
+    const g = group(
+      part(box(w, h, 0.07), m.gold, 0, 0, 0),
+      part(box(w * 0.86, h * 0.86, 0.02), m.canvasArt, 0, 0, 0.04),
+      part(box(w * 0.90, h * 0.90, 0.01), m.gold, 0, 0, 0.036),
+    );
+    g.userData.hangs = true;
+    return g;
+  },
+  mirror(m) {
+    const g = group(
+      part(box(1.3, 2.1, 0.08), m.trim, 0, 1.1, -0.06),
+      part(box(1.16, 1.94, 0.02), m.gold, 0, 1.1, -0.02),
+      part(box(1.1, 1.9, 0.03), m.mirror, 0, 1.1, 0),
+    );
+    g.userData.collider = { w: 1.3, d: 0.3, h: 2.1 };
+    return g;
+  },
+  curtain(m) {
+    const g = new THREE.Group();
+    // a pole with rings, and two gathered drops
+    g.add(part(cyl(0.026, 0.026, 1.9, 8), m.brass, 0, 2.28, 0, [0, 0, Math.PI / 2]));
+    [-0.90, 0.90].forEach((x) => g.add(part(new THREE.SphereGeometry(0.055, 10, 8), m.brass, x, 2.28, 0)));
+    [-1, 1].forEach((side) => {
+      for (let i = 0; i < 4; i += 1) {
+        const x = side * (0.32 + i * 0.16);
+        const w = 0.17 - i * 0.012;
+        g.add(part(box(w, 1.72, 0.10 + i * 0.02), m.curtainCloth, x, 1.38, 0.02, [0, 0, side * 0.02]));
+      }
+      g.add(part(box(0.68, 0.10, 0.14), m.curtainCloth, side * 0.60, 1.10, 0.04));
+    });
+    g.userData.hangs = true;
+    return g;
+  },
+  rugMat(m) {
+    const w = 3.0;
+    const d = 2.1;
+    const mesh = new THREE.Mesh(box(w, 0.035, d), m.rug);
+    mesh.position.y = 0.018;
+    mesh.receiveShadow = true;
+    mesh.castShadow = false;
+    const g = group(mesh);
+    // fringe at both ends
+    for (let i = 0; i < 22; i += 1) {
+      const x = -w / 2 + 0.08 + (i / 21) * (w - 0.16);
+      [-1, 1].forEach((side) => {
+        g.add(part(box(0.02, 0.012, 0.09), m.rug, x, 0.012, side * (d / 2 + 0.045)));
+      });
+    }
+    g.userData.rug = { w, d };
+    return g;
+  },
+  pillar(m) {
+    const g = group(
+      part(cyl(0.34, 0.40, 3.4, 14), m.stoneTrim, 0, 1.9),
+      part(box(1.0, 0.22, 1.0), m.stoneTrim, 0, 0.11),            // base
+      part(box(0.92, 0.16, 0.92), m.stoneTrim, 0, 0.30),
+      part(box(1.05, 0.26, 1.05), m.stoneTrim, 0, 3.72),          // capital
+      part(box(0.90, 0.20, 0.90), m.stoneTrim, 0, 3.52),
+    );
+    g.userData.collider = { w: 1.0, d: 1.0, h: 3.9 };
+    return g;
+  },
+  rubble(m) {
+    const g = new THREE.Group();
+    for (let i = 0; i < 7; i += 1) {
+      const a = (i / 7) * Math.PI * 2;
+      const r = 0.1 + (i % 4) * 0.16;
+      g.add(part(new THREE.DodecahedronGeometry(0.10 + (i % 3) * 0.07, 0), m.stoneTrim,
+        Math.cos(a) * r, 0.08 + (i % 3) * 0.06, Math.sin(a) * r, [i, i * 0.7, i * 1.4]));
+    }
+    return g;
+  },
+
+  // ---- light fittings ----
+  candle(m) {
+    const g = group(
+      part(cyl(0.05, 0.06, 0.28, 8), m.wax, 0, 0.14),
+      part(cyl(0.09, 0.10, 0.02, 10), m.brass, 0, 0.01),
+    );
+    const light = new THREE.PointLight(0xffa04a, 16, 8, 1.6);
+    light.position.set(0, 0.36, 0);
+    light.castShadow = false;
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    return g;
+  },
+  chandelier(m) {
+    const g = group(
+      part(cyl(0.03, 0.03, 1.4, 6), m.brass, 0, -0.7),
+      part(new THREE.SphereGeometry(0.10, 10, 8), m.brass, 0, -1.34),
+      part(new THREE.TorusGeometry(0.55, 0.05, 6, 18), m.brass, 0, -1.4, 0, [Math.PI / 2, 0, 0]),
+    );
+    // six arms, each with a candle and a hanging drop
+    for (let i = 0; i < 6; i += 1) {
+      const a = (i / 6) * Math.PI * 2;
+      const x = Math.cos(a) * 0.55;
+      const z = Math.sin(a) * 0.55;
+      g.add(part(cyl(0.018, 0.018, 0.34, 6), m.brass, x * 0.55, -1.46, z * 0.55, [0, -a, 0.9]));
+      g.add(part(cyl(0.075, 0.05, 0.05, 8), m.brass, x, -1.30, z));
+      g.add(part(cyl(0.028, 0.032, 0.16, 8), m.wax, x, -1.20, z));
+      g.add(part(new THREE.OctahedronGeometry(0.045, 0), m.glass, x * 0.82, -1.58, z * 0.82));
+    }
+    const light = new THREE.PointLight(0xffb060, 34, 15, 1.6);
+    light.position.set(0, -1.4, 0);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    g.userData.hangs = true;
+    return g;
+  },
+  gasolier(m) {
+    const g = group(
+      part(cyl(0.026, 0.026, 1.1, 6), m.brass, 0, -0.55),
+      part(cyl(0.14, 0.10, 0.12, 10), m.brass, 0, -1.14),
+    );
+    for (let i = 0; i < 4; i += 1) {
+      const a = (i / 4) * Math.PI * 2 + 0.4;
+      const x = Math.cos(a) * 0.42;
+      const z = Math.sin(a) * 0.42;
+      g.add(part(cyl(0.014, 0.014, 0.46, 6), m.brass, x * 0.5, -1.20, z * 0.5, [0, -a, 1.15]));
+      g.add(part(cyl(0.10, 0.055, 0.16, 10, 1, true), m.glass, x, -1.32, z));
+    }
+    const light = new THREE.PointLight(0xffb066, 24, 12, 1.6);
+    light.position.set(0, -1.3, 0);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    g.userData.hangs = true;
+    return g;
+  },
+  oilLamp(m) {
+    const g = group(
+      part(box(0.16, 0.26, 0.05), m.brass, 0, 0, 0),               // back plate
+      part(cyl(0.018, 0.018, 0.16, 6), m.brass, 0, -0.02, 0.09, [Math.PI / 2, 0, 0]),
+      part(cyl(0.075, 0.055, 0.09, 10), m.brass, 0, 0.02, 0.18),   // font
+      part(cyl(0.055, 0.085, 0.22, 10, 1, true), m.glass, 0, 0.17, 0.18),  // chimney
+    );
+    const light = new THREE.PointLight(0xffc27a, 15, 9, 1.6);
+    light.position.set(0, 0.16, 0.20);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    g.userData.hangs = true;
+    return g;
+  },
+  sconce(m) {
+    const g = group(
+      part(box(0.16, 0.30, 0.05), m.brass, 0, 0, 0),
+      part(cyl(0.02, 0.02, 0.22, 6), m.brass, 0, 0.02, 0.11, [Math.PI / 2.6, 0, 0]),
+      part(cyl(0.075, 0.045, 0.16, 8, 1, true), m.brass, 0, 0.16, 0.20),
+      part(cyl(0.028, 0.032, 0.14, 8), m.wax, 0, 0.26, 0.20),
+    );
+    const light = new THREE.PointLight(0xffa851, 13, 8.5, 1.6);
+    light.position.set(0, 0.36, 0.22);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    g.userData.hangs = true;
+    return g;
+  },
+  bareBulb(m) {
+    const g = group(
+      part(cyl(0.004, 0.004, 0.75, 4), m.iron, 0, -0.38),
+      part(cyl(0.030, 0.036, 0.07, 8), m.brass, 0, -0.78),
+      part(new THREE.SphereGeometry(0.055, 10, 8), m.glass, 0, -0.86),
+    );
+    const light = new THREE.PointLight(0xffe2b0, 12, 9, 1.7);
+    light.position.set(0, -0.86, 0);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    g.userData.hangs = true;
+    return g;
+  },
+  lantern(m) {
+    const g = group(
+      part(box(0.20, 0.28, 0.20), m.glass, 0, 0.9),
+      part(box(0.22, 0.03, 0.22), m.iron, 0, 1.05),
+      part(box(0.22, 0.03, 0.22), m.iron, 0, 0.75),
+      part(box(0.06, 0.9, 0.06), m.iron, 0, 0.45),
+      part(new THREE.TorusGeometry(0.05, 0.008, 5, 10), m.iron, 0, 1.11),
+    );
+    const light = new THREE.PointLight(0x86c8ff, 20, 11, 1.6);
+    light.position.set(0, 0.95, 0);
+    g.add(light);
+    g.userData.light = light;
+    g.userData.flicker = true;
+    return g;
+  },
+
+  // ---- narrative dressing (unchanged behaviour) ----
+  piano(m) {
+    const g = group(
+      part(box(1.5, 0.9, 0.7), m.panel, 0, 0.6),
+      part(box(1.4, 0.06, 0.2), m.bone, 0, 1.02, 0.3),
+      part(box(0.12, 0.6, 0.12), m.panel, -0.6, 0.3, 0.25),
+      part(box(0.12, 0.6, 0.12), m.panel, 0.6, 0.3, 0.25),
+    );
+    for (let i = -8; i <= 8; i += 1) {
+      if (i % 3 === 0) g.add(part(box(0.035, 0.02, 0.13), m.cloth, i * 0.078, 1.06, 0.27));
+    }
+    g.userData.collider = { w: 1.7, d: 0.9, h: 1.1 };
+    g.userData.interact = { type: 'piano' };
+    return g;
+  },
+  painting(m) {
+    return group(
+      part(box(1.0, 1.3, 0.08), m.gold, 0, 2.0),
+      part(box(0.85, 1.15, 0.02), m.canvasArt, 0, 2.0, 0.05),
+    );
   },
   bed(m) {
     const g = group(
@@ -57308,86 +58939,20 @@ PROPS = {
     g.userData.collider = { w: 1.4, d: 2.2, h: 0.8 };
     return g;
   },
-  piano(m) {
-    const g = group(
-      part(box(1.5, 0.9, 0.7), m.panel, 0, 0.6),
-      part(box(1.4, 0.06, 0.2), m.bone, 0, 1.02, 0.3),
-      part(box(0.12, 0.6, 0.12), m.panel, -0.6, 0.3, 0.25),
-      part(box(0.12, 0.6, 0.12), m.panel, 0.6, 0.3, 0.25),
-    );
-    g.userData.collider = { w: 1.7, d: 0.9, h: 1.1 };
-    g.userData.interact = { type: 'piano' };
-    return g;
-  },
-  mirror(m) {
-    const g = group(
-      part(box(1.3, 2.1, 0.08), m.panel, 0, 1.1, -0.06),
-      part(box(1.1, 1.9, 0.03), m.mirror, 0, 1.1, 0),
-    );
-    g.children[1].material = m.mirror;
-    g.children[1].material.userData.reflectivity = 1.0;
-    g.userData.collider = { w: 1.3, d: 0.3, h: 2.1 };
-    return g;
-  },
-  painting(m) {
-    const canvasMat = m.cloth.clone();
-    canvasMat.color.setHex(0x3a2a22);
-    const g = group(
-      part(box(1.0, 1.3, 0.08), m.gold, 0, 2.0),
-      part(box(0.85, 1.15, 0.02), canvasMat, 0, 2.0, 0.05),
-    );
-    return g;
-  },
-  candle(m) {
-    const geo = new THREE.CylinderGeometry(0.05, 0.06, 0.28, 8);
-    const wax = new THREE.MeshStandardMaterial({ color: 0xe8dcc0, roughness: 0.8 });
-    const g = group(part(geo, wax, 0, 0.14));
-    const light = new THREE.PointLight(0xffa04a, 16, 8, 1.6);
-    light.position.set(0, 0.36, 0);
-    light.castShadow = false;
-    g.add(light);
-    g.userData.light = light;
-    g.userData.flicker = true;
-    void m;
-    return g;
-  },
-  chandelier(m) {
-    const g = group(
-      part(new THREE.CylinderGeometry(0.03, 0.03, 1.4, 6), m.metal, 0, -0.7),
-      part(new THREE.TorusGeometry(0.55, 0.05, 6, 18), m.metal, 0, -1.4),
-    );
-    g.children[1].rotation.x = Math.PI / 2;
-    const light = new THREE.PointLight(0xffb060, 34, 15, 1.6);
-    light.position.set(0, -1.4, 0);
-    g.add(light);
-    g.userData.light = light;
-    g.userData.flicker = true;
-    g.userData.hangs = true;
-    return g;
-  },
-  lantern(m) {
-    const g = group(part(box(0.22, 0.3, 0.22), m.metal, 0, 0.9), part(box(0.06, 0.9, 0.06), m.metal, 0, 0.45));
-    const light = new THREE.PointLight(0x86c8ff, 20, 11, 1.6);
-    light.position.set(0, 0.95, 0);
-    g.add(light);
-    g.userData.light = light;
-    g.userData.flicker = true;
-    return g;
-  },
-  corpse(m) {
+  corpse(m, variant = 0) {
     const g = group(
       part(box(0.45, 0.22, 1.4), m.cloth, 0, 0.12),
       part(new THREE.SphereGeometry(0.16, 10, 8), m.bone, 0, 0.18, 0.82),
       part(box(0.16, 0.14, 0.7), m.cloth, -0.32, 0.1, 0.1),
       part(box(0.16, 0.14, 0.7), m.cloth, 0.32, 0.1, 0.1),
     );
-    g.rotation.y = Math.random() * Math.PI * 2;
+    g.rotation.y = variant * 2.1;
     return g;
   },
   altar(m) {
     const g = group(
-      part(box(2.2, 0.25, 1.3), m.wallStone, 0, 0.95),
-      part(box(1.9, 0.95, 1.0), m.wallStone, 0, 0.48),
+      part(box(2.2, 0.25, 1.3), m.stoneTrim, 0, 0.95),
+      part(box(1.9, 0.95, 1.0), m.stoneTrim, 0, 0.48),
       part(box(0.1, 1.6, 0.1), m.panel, 0, 1.8, -0.5),
       part(box(0.8, 0.1, 0.1), m.panel, 0, 2.1, -0.5),
     );
@@ -57398,20 +58963,19 @@ PROPS = {
     const g = new THREE.Group();
     for (let i = 0; i < 8; i += 1) {
       const a = (i / 8) * Math.PI * 2;
-      g.add(part(box(0.06, 2.0, 0.06), m.metal, Math.cos(a) * 0.55, 1.0, Math.sin(a) * 0.55));
+      g.add(part(box(0.06, 2.0, 0.06), m.iron, Math.cos(a) * 0.55, 1.0, Math.sin(a) * 0.55));
     }
-    g.add(part(new THREE.TorusGeometry(0.55, 0.05, 6, 16), m.metal, 0, 2.0));
-    g.children[g.children.length - 1].rotation.x = Math.PI / 2;
+    g.add(part(new THREE.TorusGeometry(0.55, 0.05, 6, 16), m.iron, 0, 2.0, 0, [Math.PI / 2, 0, 0]));
     g.userData.collider = { w: 1.2, d: 1.2, h: 2.0 };
     return g;
   },
   hook(m) {
     const g = group(
-      part(box(0.04, 2.4, 0.04), m.metal, 0, 2.4),
-      part(new THREE.TorusGeometry(0.18, 0.045, 6, 12, Math.PI * 1.4), m.metal, 0, 1.2),
+      part(box(0.04, 2.4, 0.04), m.iron, 0, 2.4),
+      part(new THREE.TorusGeometry(0.18, 0.045, 6, 12, Math.PI * 1.4), m.iron, 0, 1.2, 0, [0, 0, Math.PI * 0.2]),
     );
-    g.children[1].rotation.z = Math.PI * 0.2;
     g.userData.swings = true;
+    g.userData.merge = false;
     return g;
   },
   stairs(m) {
@@ -57421,8 +58985,8 @@ PROPS = {
     }
     return g;
   },
-  bloodPool(m) {
-    const geo = new THREE.CircleGeometry(0.9 + Math.random() * 0.6, 16);
+  bloodPool(m, variant = 0) {
+    const geo = new THREE.CircleGeometry(0.9 + (variant % 3) * 0.22, 16);
     const mesh = new THREE.Mesh(geo, m.blood);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.y = 0.012;
@@ -57431,7 +58995,10 @@ PROPS = {
     return group(mesh);
   },
   fuseBox(m) {
-    const g = group(part(box(0.7, 0.9, 0.25), m.metal, 0, 1.4), part(box(0.5, 0.7, 0.05), m.panel, 0, 1.4, 0.15));
+    const g = group(
+      part(box(0.7, 0.9, 0.25), m.iron, 0, 1.4),
+      part(box(0.5, 0.7, 0.05), m.panel, 0, 1.4, 0.15),
+    );
     g.userData.collider = { w: 0.8, d: 0.4, h: 2.0 };
     return g;
   },
@@ -57440,7 +59007,7 @@ PROPS = {
     paint.userData.reflectivity = 0.7;
     const glass = m.glass;
     const tyre = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.95 });
-    const wheel = new THREE.CylinderGeometry(0.34, 0.34, 0.24, 14);
+    const wheel = cyl(0.34, 0.34, 0.24, 14);
     const g = group(
       part(box(1.9, 0.55, 4.2), paint, 0, 0.62),
       part(box(1.7, 0.62, 2.0), paint, 0, 1.15, -0.2),
@@ -57449,9 +59016,7 @@ PROPS = {
       part(box(0.06, 0.5, 1.9), glass, -0.82, 1.2, -0.2),
     );
     [[-0.88, 1.35], [0.88, 1.35], [-0.88, -1.45], [0.88, -1.45]].forEach(([x, z]) => {
-      const w = part(wheel, tyre, x, 0.34, z);
-      w.rotation.z = Math.PI / 2;
-      g.add(w);
+      g.add(part(wheel, tyre, x, 0.34, z, [0, 0, Math.PI / 2]));
     });
     const head = new THREE.PointLight(0xfff2cc, 0, 9, 1.6);
     head.position.set(0, 0.7, 2.2);
@@ -57459,28 +59024,63 @@ PROPS = {
     g.userData.light = head;
     g.userData.collider = { w: 2.2, d: 4.4, h: 1.6 };
     g.rotation.y = 0.22;
+    g.userData.merge = false;
     return g;
   },
   valve(m) {
     const g = group(
-      part(new THREE.TorusGeometry(0.32, 0.06, 8, 16), m.metal, 0, 1.2),
-      part(box(0.22, 0.22, 0.3), m.metal, 0, 1.2, -0.2),
+      part(new THREE.TorusGeometry(0.32, 0.06, 8, 16), m.iron, 0, 1.2),
+      part(box(0.22, 0.22, 0.3), m.iron, 0, 1.2, -0.2),
     );
     g.userData.collider = { w: 0.7, d: 0.5, h: 1.6 };
     return g;
   },
 };
 
+/**
+ * Props that build a few different shapes, so a wall of pictures or a shelf of
+ * pots is not the same object stamped out N times. The dresser cycles the
+ * variant index; the factory reads it instead of rolling a die, which keeps a
+ * level identical between loads.
+ */
+const VARIED = new Set(['pictureFrame', 'pot', 'crate', 'corpse', 'bookStack', 'rubble', 'clothPile']);
+
+/** Fixtures the room lighting rules may hang. */
+const FIXTURES = {
+  chandelier: 'chandelier', gasolier: 'gasolier', sconce: 'sconce',
+  oilLamp: 'oilLamp', bareBulb: 'bareBulb', candles: 'candle', lantern: 'lantern',
+};
+
 // --- level construction -----------------------------------------------------
+
+/** Deterministic per-room RNG, so a level dresses identically every load. */
+function rng(seed) {
+  let s = (seed * 1103515245 + 12345) >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return (s >>> 8) / 16777216;
+  };
+}
 
 Level = class Level {
   constructor(def, textures) {
     this.def = def;
-    this.grid = def.blueprint || def.grid;
+    const blueprint = def.blueprint || def.grid;
+    // blueprints now carry a zone map; a bare string grid is still accepted
+    if (Array.isArray(blueprint)) {
+      this.grid = blueprint;
+      this.zones = null;
+      this.rooms = [];
+    } else {
+      this.grid = blueprint.grid;
+      this.zones = blueprint.zones;
+      this.rooms = blueprint.rooms || [];
+    }
     this.rows = this.grid.length;
     this.cols = Math.max(...this.grid.map((r) => r.length));
     this.wallHeight = def.wallHeight ?? 4.2;
     this.materials = createMaterials(textures);
+    this.matCache = new Map();
     Object.entries(def.materialOverrides || {}).forEach(([key, patch]) => {
       const material = this.materials[key];
       if (!material) return;
@@ -57496,6 +59096,10 @@ Level = class Level {
     this.propColliders = [];
     this.waterTiles = new Set();
     this.floorKind = new Map();
+    this.occupied = new Set();
+    this.templates = new Map();
+    this.pending = new Map();
+    this.dressed = [];
     this.solid = new Uint8Array(this.rows * this.cols);
     this.build();
   }
@@ -57505,6 +59109,18 @@ Level = class Level {
     const line = this.grid[row];
     if (col < 0 || col >= line.length) return ' ';
     return line[col];
+  }
+
+  /** The room record owning a tile, or null outside any room. */
+  roomAt(col, row) {
+    if (!this.zones || row < 0 || row >= this.rows || col < 0 || col >= this.cols) return null;
+    const id = this.zones[row * this.cols + col];
+    return id < 0 ? null : this.rooms[id] || null;
+  }
+
+  /** The room type spec governing a tile's look. */
+  styleAt(col, row) {
+    return roomType(this.roomAt(col, row)?.type);
   }
 
   toWorld(col, row) {
@@ -57537,12 +59153,27 @@ Level = class Level {
     return this.floorKind.get(`${col},${row}`) || 'wood';
   }
 
+  /** A material variant tinted for one room, cached so draw calls stay low. */
+  materialFor(key, tint = 0xffffff) {
+    const id = `${key}:${tint}`;
+    const hit = this.matCache.get(id);
+    if (hit) return hit;
+    const base = this.materials[key] || this.materials.wallPaper;
+    const material = tint === 0xffffff ? base : base.clone();
+    if (tint !== 0xffffff) {
+      material.color.setHex(tint);
+      material.userData = { ...base.userData };
+    }
+    this.matCache.set(id, material);
+    return material;
+  }
+
   build() {
     const m = this.materials;
     const def = this.def;
     const floorBuckets = new Map();
     const wallBuckets = new Map();
-    const ceilingTiles = [];
+    const ceilingBuckets = new Map();
 
     for (let row = 0; row < this.rows; row += 1) {
       for (let col = 0; col < this.cols; col += 1) {
@@ -57551,21 +59182,34 @@ Level = class Level {
 
         if (WALL_CHARS.has(ch)) {
           this.solid[row * this.cols + col] = 1;
-          const key = ch === 'X' ? 'panel' : (def.wallMaterial || 'wallPaper');
+          // a wall carcass takes the look of whichever room it borders; the
+          // faces the player actually sees are panelled per-room below
+          const neighbour = DIRS.map(([dc, dr]) => this.roomAt(col + dc, row + dr)).find(Boolean);
+          const style = roomType(neighbour?.type);
+          const key = ch === 'X' ? 'panel|16777215' : `${style.wall.field}|${style.wall.tint}`;
           if (!wallBuckets.has(key)) wallBuckets.set(key, []);
           wallBuckets.get(key).push([col, row]);
           continue;
         }
 
         // walkable
-        let kind = FLOOR_TYPES[ch] || def.defaultFloor || 'wood';
-        if (ch === '+') kind = def.defaultFloor || 'wood';
-        this.floorKind.set(`${col},${row}`, kind);
-        const bucketKey = kind === 'water' ? 'water' : kind;
+        const behaviour = FLOOR_TYPES[ch];
+        const style = this.styleAt(col, row);
+        const isWater = behaviour === 'water';
+        const material = isWater ? 'water' : (style.floor || def.defaultFloor || 'woodFloor');
+        const tint = isWater ? 0xffffff : (style.floorTint ?? 0xffffff);
+
+        this.floorKind.set(`${col},${row}`, STEP_KIND[material] || 'wood');
+        const bucketKey = `${material}|${tint}`;
         if (!floorBuckets.has(bucketKey)) floorBuckets.set(bucketKey, []);
         floorBuckets.get(bucketKey).push([col, row]);
-        if (kind === 'water') this.waterTiles.add(`${col},${row}`);
-        if (def.ceiling !== false) ceilingTiles.push([col, row]);
+        if (isWater) this.waterTiles.add(`${col},${row}`);
+
+        if (style.ceiling && def.ceiling !== false) {
+          const ck = `${style.ceiling.material}|${style.wall.tint}|${style.ceiling.treatment}`;
+          if (!ceilingBuckets.has(ck)) ceilingBuckets.set(ck, []);
+          ceilingBuckets.get(ck).push([col, row]);
+        }
 
         if (ch === '+') {
           this.solid[row * this.cols + col] = 1; // doors start closed
@@ -57577,60 +59221,266 @@ Level = class Level {
       }
     }
 
-    const addInstanced = (geometry, material, cells, yOffset, tint) => {
-      if (!cells.length) return null;
-      const mesh = new THREE.InstancedMesh(geometry, material, cells.length);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      const dummy = new THREE.Object3D();
-      const color = new THREE.Color();
-      cells.forEach(([col, row], i) => {
-        const p = this.toWorld(col, row);
-        dummy.position.set(p.x, yOffset, p.z);
-        dummy.rotation.set(0, 0, 0);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-        const v = 0.82 + ((col * 7 + row * 13) % 11) / 32;
-        color.setRGB(v * tint, v * tint, v * tint);
-        mesh.setColorAt(i, color);
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      this.group.add(mesh);
-      return mesh;
-    };
+    this.#buildFloors(floorBuckets);
+    this.#buildWalls(wallBuckets);
+    this.#buildCeilings(ceilingBuckets);
+    this.#buildDoors();
+    this.#buildWallFaces();
+    this.#buildWindows();
+    this.#buildRoomLights();
+    this.#dressRooms();
 
+    (def.props || []).forEach((spec) => this.placeProp(spec));
+    this.#flushProps();
+    void m;
+  }
+
+  #instance(geometry, material, cells, yOffset, tint = 1) {
+    if (!cells.length) return null;
+    const mesh = new THREE.InstancedMesh(geometry, material, cells.length);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    cells.forEach(([col, row], i) => {
+      const p = this.toWorld(col, row);
+      dummy.position.set(p.x, yOffset, p.z);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      const v = 0.82 + ((col * 7 + row * 13) % 11) / 32;
+      color.setRGB(v * tint, v * tint, v * tint);
+      mesh.setColorAt(i, color);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    this.group.add(mesh);
+    return mesh;
+  }
+
+  #buildFloors(buckets) {
     const floorGeo = box(TILE, 0.2, TILE);
-    floorBuckets.forEach((cells, key) => {
-      const material = m[key] || m.wood;
-      if (key === 'water') {
-        addInstanced(box(TILE, 0.1, TILE), m.concrete, cells, -0.16, 0.8);
-        const water = addInstanced(box(TILE, 0.28, TILE), material, cells, -0.02, 1);
+    buckets.forEach((cells, key) => {
+      const [name, tintStr] = key.split('|');
+      const tint = Number(tintStr);
+      if (name === 'water') {
+        this.#instance(box(TILE, 0.1, TILE), this.materials.concrete, cells, -0.16, 0.8);
+        const water = this.#instance(box(TILE, 0.28, TILE), this.materials.water, cells, -0.02, 1);
         if (water) {
           water.material.userData.reflectivity = 0.95;
           water.castShadow = false;
-          water.userData.noGBuffer = false;
           this.waterMesh = water;
         }
-      } else {
-        const inst = addInstanced(floorGeo, material, cells, -0.1, 1);
-        if (inst) inst.castShadow = false;
+        return;
+      }
+      const inst = this.#instance(floorGeo, this.materialFor(name, tint), cells, -0.1, 1);
+      if (inst) inst.castShadow = false;
+    });
+  }
+
+  #buildWalls(buckets) {
+    const wallGeo = box(TILE, this.wallHeight, TILE);
+    buckets.forEach((cells, key) => {
+      const [name, tintStr] = key.split('|');
+      this.#instance(wallGeo, this.materialFor(name, Number(tintStr)), cells, this.wallHeight / 2, 1);
+    });
+  }
+
+  /**
+   * Ceilings vary by room: flat plaster in the service rooms, a moulded rose
+   * in the drawing room, exposed beams in the kitchen, a coffer grid in the
+   * library, brick vaults in the cellars.
+   */
+  #buildCeilings(buckets) {
+    const H = this.wallHeight;
+    buckets.forEach((cells, key) => {
+      const [name, tintStr, treatment] = key.split('|');
+      const material = this.materialFor(name, Number(tintStr));
+      const slab = this.#instance(box(TILE, 0.25, TILE), material, cells, H + 0.1, 0.7);
+      if (slab) slab.castShadow = false;
+
+      if (treatment === 'beams') {
+        const beam = this.#instance(box(TILE, 0.26, 0.30), this.materials.panel, cells, H - 0.14, 0.75);
+        if (beam) beam.castShadow = false;
+      } else if (treatment === 'coffer') {
+        // a moulded grid: ribs both ways with a recessed panel between
+        const rib = box(TILE, 0.16, 0.14);
+        const a = this.#instance(rib, this.materials.trim, cells, H - 0.09, 0.8);
+        if (a) a.castShadow = false;
+        const b = new THREE.InstancedMesh(box(0.14, 0.16, TILE), this.materials.trim, cells.length);
+        const dummy = new THREE.Object3D();
+        cells.forEach(([col, row], i) => {
+          const p = this.toWorld(col, row);
+          dummy.position.set(p.x, H - 0.09, p.z);
+          dummy.updateMatrix();
+          b.setMatrixAt(i, dummy.matrix);
+        });
+        b.instanceMatrix.needsUpdate = true;
+        b.castShadow = false;
+        this.group.add(b);
+      } else if (treatment === 'rose') {
+        // one moulded rose per room, under the centre tile only
+        const centres = this.#roomCentres(cells);
+        centres.forEach((p) => {
+          const rose = group(
+            part(cyl(0.62, 0.62, 0.07, 24), this.materials.ceilingPlaster, 0, 0),
+            part(cyl(0.44, 0.44, 0.07, 20), this.materials.ceilingPlaster, 0, -0.05),
+            part(cyl(0.20, 0.20, 0.09, 16), this.materials.ceilingPlaster, 0, -0.10),
+          );
+          for (let i = 0; i < 12; i += 1) {
+            const a = (i / 12) * Math.PI * 2;
+            rose.add(part(box(0.30, 0.05, 0.11), this.materials.ceilingPlaster,
+              Math.cos(a) * 0.40, -0.04, Math.sin(a) * 0.40, [0, -a, 0]));
+          }
+          const merged = mergeGroup(rose);
+          merged.position.set(p.x, H - 0.06, p.z);
+          merged.children.forEach((c) => { c.castShadow = false; });
+          this.group.add(merged);
+        });
+      } else if (treatment === 'vault') {
+        // shallow brick barrel vaults springing off the walls
+        const arc = new THREE.CylinderGeometry(TILE * 0.62, TILE * 0.62, TILE, 12, 1, true, 0, Math.PI);
+        // a clone: flipping `side` on the cached material would make every
+        // wall using this brick double-sided too
+        const vaultMaterial = material.clone();
+        vaultMaterial.userData = { ...material.userData };
+        vaultMaterial.side = THREE.DoubleSide;
+        const vault = new THREE.InstancedMesh(arc, vaultMaterial, cells.length);
+        const dummy = new THREE.Object3D();
+        cells.forEach(([col, row], i) => {
+          const p = this.toWorld(col, row);
+          dummy.position.set(p.x, H - TILE * 0.34, p.z);
+          dummy.rotation.set(Math.PI / 2, 0, 0);
+          dummy.updateMatrix();
+          vault.setMatrixAt(i, dummy.matrix);
+        });
+        vault.instanceMatrix.needsUpdate = true;
+        vault.castShadow = false;
+        vault.receiveShadow = true;
+        this.group.add(vault);
       }
     });
+  }
 
-    const wallGeo = box(TILE, this.wallHeight, TILE);
-    wallBuckets.forEach((cells, key) => {
-      addInstanced(wallGeo, m[key] || m.wallPaper, cells, this.wallHeight / 2, 1);
+  /** One representative world point per room among the given cells. */
+  #roomCentres(cells) {
+    const byRoom = new Map();
+    cells.forEach(([col, row]) => {
+      const id = this.zones ? this.zones[row * this.cols + col] : -1;
+      if (id < 0) return;
+      if (!byRoom.has(id)) byRoom.set(id, []);
+      byRoom.get(id).push([col, row]);
+    });
+    const out = [];
+    byRoom.forEach((list) => {
+      let sc = 0;
+      let sr = 0;
+      list.forEach(([c, r]) => { sc += c; sr += r; });
+      const cc = Math.round(sc / list.length);
+      const rr = Math.round(sr / list.length);
+      // snap to an actual tile of the room
+      let best = list[0];
+      let bestD = 1e9;
+      list.forEach(([c, r]) => {
+        const d = Math.hypot(c - cc, r - rr);
+        if (d < bestD) { bestD = d; best = [c, r]; }
+      });
+      out.push(this.toWorld(best[0], best[1]));
+    });
+    return out;
+  }
+
+  /**
+   * Every wall face a room can see, built up the way Victorian joinery is:
+   * skirting, then panelled wainscot, dado rail, the papered field, a picture
+   * rail, and the cornice. This is also what solves a one-tile partition
+   * having a kitchen on one side and a library on the other — the covering
+   * belongs to the face, not to the wall block.
+   */
+  #buildWallFaces() {
+    const H = this.wallHeight;
+    const buckets = new Map();
+    // a doorway must not get skirted and papered across its opening
+    const doorTiles = new Set(this.doors.map((d) => `${d.col},${d.row}`));
+
+    const add = (key, geo, material, edge, y, depth) => {
+      if (!buckets.has(key)) buckets.set(key, { geo, material, items: [] });
+      buckets.get(key).items.push([edge, y, depth]);
+    };
+
+    this.floorKind.forEach((kind, cellKey) => {
+      if (doorTiles.has(cellKey)) return;
+      const [col, row] = cellKey.split(',').map(Number);
+      const style = this.styleAt(col, row);
+      const w = style.wall;
+      // an outdoor "room" is a garden or a drive: a boundary wall, not joinery
+      const outdoor = !style.ceiling || this.def.ceiling === false;
+      DIRS.forEach(([dc, dr, yaw]) => {
+        if (!this.isSolid(col + dc, row + dr)) return;
+        const edge = [col, row, dc, dr, yaw];
+        const tint = w.tint ?? 0xffffff;
+        const dado = w.wainscot && !outdoor ? w.dado : 0;
+        const picture = w.picture && !outdoor ? Math.min(H - 0.42, 2.55) : H - 0.13;
+
+        if (outdoor) {
+          add(`outer|${w.field}|${tint}`, box(TILE, H - 0.1, 0.05),
+            this.materialFor(w.field, tint), edge, (H - 0.1) / 2, 0.472);
+          return;
+        }
+
+        // skirting
+        add(`skirt|${tint}`, box(TILE, 0.19, 0.09), this.materials.trim, edge, 0.095, 0.455);
+
+        if (w.wainscot && dado > 0.3) {
+          const h = dado - 0.19;
+          add(`wainscot|${w.wainscot}|${h.toFixed(2)}`, box(TILE, h, 0.06),
+            this.materialFor(w.wainscot), edge, 0.19 + h / 2, 0.468);
+          add(`dado|${dado.toFixed(2)}`, box(TILE, 0.10, 0.12), this.materials.trim,
+            edge, dado + 0.05, 0.452);
+        }
+
+        // the papered (or brick, or limewashed) field
+        const fieldBottom = dado > 0.3 ? dado + 0.10 : 0.19;
+        const fieldH = picture - fieldBottom;
+        if (fieldH > 0.2) {
+          add(`field|${w.field}|${tint}|${fieldH.toFixed(2)}|${fieldBottom.toFixed(2)}`,
+            box(TILE, fieldH, 0.05), this.materialFor(w.field, tint),
+            edge, fieldBottom + fieldH / 2, 0.472);
+        }
+
+        if (w.picture) {
+          add('picrail', box(TILE, 0.07, 0.09), this.materials.trim, edge, picture + 0.035, 0.455);
+          const friezeH = H - 0.13 - (picture + 0.07);
+          if (friezeH > 0.1) {
+            add(`frieze|${friezeH.toFixed(2)}`, box(TILE, friezeH, 0.05),
+              this.materialFor('ceilingPlaster', tint), edge, picture + 0.07 + friezeH / 2, 0.472);
+          }
+        }
+
+        add('cornice', box(TILE, 0.15, 0.15), this.materials.trim, edge, H - 0.075, 0.44);
+      });
     });
 
-    if (ceilingTiles.length) {
-      const ceil = addInstanced(box(TILE, 0.25, TILE), m[def.ceilingMaterial || 'panel'], ceilingTiles, this.wallHeight + 0.1, 0.7);
-      if (ceil) ceil.castShadow = false;
-    }
+    const dummy = new THREE.Object3D();
+    buckets.forEach(({ geo, material, items }) => {
+      const mesh = new THREE.InstancedMesh(geo, material, items.length);
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      items.forEach(([[col, row, dc, dr, yaw], y, depth], i) => {
+        const p = this.toWorld(col, row);
+        dummy.position.set(p.x + dc * TILE * depth, y, p.z + dr * TILE * depth);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      this.group.add(mesh);
+    });
+  }
 
-    // Doors: a cased opening (jambs + lintel + threshold) with a panelled leaf
-    // hinged inside it, so a doorway reads as carpentry and not a hole.
-    const trim = m[def.trimMaterial || 'trim'] || m.trim;
+  #buildDoors() {
+    const m = this.materials;
+    const trim = m[this.def.trimMaterial || 'trim'] || m.trim;
     const doorH = Math.min(this.wallHeight * 0.86, 2.35);
     this.doors.forEach((door) => {
       const p = this.toWorld(door.col, door.row);
@@ -57641,171 +59491,503 @@ Level = class Level {
 
       const jambT = 0.14;
       const opening = TILE - jambT * 2;
-      // head casing above the opening, filling up to the ceiling
       frame.add(part(box(TILE, this.wallHeight - doorH, 0.34), trim,
         0, doorH + (this.wallHeight - doorH) / 2, 0));
       frame.add(part(box(TILE * 1.02, 0.16, 0.40), trim, 0, doorH, 0));
-      // side jambs
       [-1, 1].forEach((side) => {
         frame.add(part(box(jambT, doorH, 0.34), trim, side * (TILE - jambT) / 2, doorH / 2, 0));
       });
-      // threshold
       frame.add(part(box(opening, 0.05, 0.30), trim, 0, 0.025, 0));
-      this.group.add(frame);
+      // the frame is already positioned, and mergeGroup bakes world transforms
+      // into the vertices, so the merged result belongs at the origin
+      this.group.add(mergeGroup(frame));
 
-      // the leaf swings from the hinge side of the opening
       const pivot = new THREE.Group();
       pivot.position.copy(frame.position);
       pivot.rotation.y = frame.rotation.y;
       pivot.translateX(-opening / 2);
       const leafW = opening * 0.98;
-      const leaf = part(box(leafW, doorH * 0.985, 0.055), m.panel, leafW / 2, doorH / 2, 0);
-      pivot.add(leaf);
-      // two recessed panels and rails, the way a real door is built up
+      const leaf = new THREE.Group();
+      leaf.add(part(box(leafW, doorH * 0.985, 0.055), m.panel, leafW / 2, doorH / 2, 0));
       [0.30, 0.68].forEach((h) => {
-        pivot.add(part(box(leafW * 0.66, doorH * 0.26, 0.02), trim, leafW / 2, doorH * h, 0.038));
+        leaf.add(part(box(leafW * 0.66, doorH * 0.26, 0.02), trim, leafW / 2, doorH * h, 0.038));
+        leaf.add(part(box(leafW * 0.58, doorH * 0.20, 0.015), m.panel, leafW / 2, doorH * h, 0.048));
       });
-      pivot.add(part(box(leafW, 0.09, 0.03), trim, leafW / 2, doorH * 0.49, 0.038));
-      // handle + escutcheon on the latch side
-      pivot.add(part(box(0.10, 0.16, 0.02), m.metal, leafW * 0.88, doorH * 0.46, 0.04));
-      pivot.add(part(new THREE.CylinderGeometry(0.022, 0.022, 0.09, 8), m.metal,
+      leaf.add(part(box(leafW, 0.09, 0.03), trim, leafW / 2, doorH * 0.49, 0.038));
+      leaf.add(part(box(0.10, 0.16, 0.02), m.brass, leafW * 0.88, doorH * 0.46, 0.04));
+      leaf.add(part(cyl(0.022, 0.022, 0.09, 8), m.brass,
         leafW * 0.88, doorH * 0.46, 0.085, [Math.PI / 2, 0, 0]));
-      pivot.add(part(new THREE.SphereGeometry(0.045, 10, 8), m.metal, leafW * 0.88, doorH * 0.46, 0.125));
-      // hinges
+      leaf.add(part(new THREE.SphereGeometry(0.045, 10, 8), m.brass, leafW * 0.88, doorH * 0.46, 0.125));
       [0.18, 0.82].forEach((h) => {
-        pivot.add(part(box(0.04, 0.13, 0.05), m.metal, 0.02, doorH * h, 0.0));
+        leaf.add(part(box(0.04, 0.13, 0.05), m.brass, 0.02, doorH * h, 0.0));
       });
+      pivot.add(mergeGroup(leaf));
 
       door.baseRotation = pivot.rotation.y;
       door.mesh = pivot;
       this.group.add(pivot);
     });
-
-    this.#buildTrim(trim);
-    this.#buildSconces();
-    this.#buildWindows();
-
-    (def.props || []).forEach((spec) => this.placeProp(spec));
   }
 
-  /** Every floor edge that meets a wall gets a skirting board and a cornice. */
-  #buildTrim(trimMaterial) {
-    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
-    const edges = [];
-    this.floorKind.forEach((kind, key) => {
-      const [col, row] = key.split(',').map(Number);
-      DIRS.forEach(([dc, dr, yaw]) => {
-        if (this.isSolid(col + dc, row + dr)) edges.push([col, row, dc, dr, yaw]);
-      });
-    });
-    if (!edges.length) return;
+  /**
+   * Windows punched into the walls that face outside, with night behind them.
+   * Every window in a chapter is identical, so one template is built and the
+   * whole set goes down as three instanced meshes rather than eight per window.
+   */
+  #buildWindows() {
+    if (this.def.windows === false) return;
+    const m = this.materials;
+    this.windows = [];
 
-    const place = (geometry, height, material) => {
-      const mesh = new THREE.InstancedMesh(geometry, material, edges.length);
+    // 1. find the openings
+    const spots = [];
+    const limit = this.def.windowLimit ?? 16;
+    this.floorKind.forEach((kind, key) => {
+      if (spots.length >= limit) return;
+      const [col, row] = key.split(',').map(Number);
+      if ((col * 7 + row * 11) % 6 !== 0) return;
+      const dir = DIRS.find(([dc, dr]) => {
+        if (!this.isSolid(col + dc, row + dr)) return false;
+        // there must be open void directly behind the wall for night to show
+        return this.charAt(col + dc * 2, row + dr * 2) === ' ';
+      });
+      if (!dir) return;
+      spots.push([col, row, dir]);
+      this.windows.push({ col, row, dir });
+    });
+    if (!spots.length) return;
+
+    // 2. build one window at the origin
+    const night = new THREE.MeshStandardMaterial({
+      color: 0x0b1220, emissive: 0x25406e, emissiveIntensity: 0.85, roughness: 0.25, metalness: 0.1,
+    });
+    night.userData.reflectivity = 0.35;
+    const sill = Math.min(1.05, this.wallHeight * 0.28);
+    const h = Math.min(1.35, this.wallHeight * 0.42);
+    const w = TILE * 0.62;
+    const template = new THREE.Group();
+    template.add(part(box(w, h, 0.05), night, 0, sill + h / 2, 0.03));
+    template.add(part(box(w, h, 0.03), m.glass, 0, sill + h / 2, 0.06));
+    template.add(part(box(w + 0.18, 0.10, 0.14), m.trim, 0, sill + h + 0.05, 0.07));
+    template.add(part(box(w + 0.18, 0.12, 0.22), m.trim, 0, sill - 0.05, 0.09));
+    [-1, 1].forEach((side) => {
+      template.add(part(box(0.09, h + 0.1, 0.14), m.trim, side * (w / 2 + 0.045), sill + h / 2, 0.07));
+    });
+    template.add(part(box(0.05, h, 0.10), m.trim, 0, sill + h / 2, 0.08));
+    template.add(part(box(w, 0.05, 0.10), m.trim, 0, sill + h * 0.5, 0.08));
+
+    // 3. stamp it out
+    const merged = mergeGroup(template);
+    const dummy = new THREE.Object3D();
+    merged.children.filter((c) => c.isMesh).forEach((child) => {
+      const mesh = new THREE.InstancedMesh(child.geometry, child.material, spots.length);
       mesh.castShadow = false;
       mesh.receiveShadow = true;
-      const dummy = new THREE.Object3D();
-      edges.forEach(([col, row, dc, dr, yaw], i) => {
+      spots.forEach(([col, row, [dc, dr, yaw]], i) => {
         const p = this.toWorld(col, row);
-        dummy.position.set(p.x + dc * TILE * 0.47, height, p.z + dr * TILE * 0.47);
+        dummy.position.set(p.x + dc * TILE * 0.49, 0, p.z + dr * TILE * 0.49);
         dummy.rotation.set(0, yaw, 0);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
       });
       mesh.instanceMatrix.needsUpdate = true;
       this.group.add(mesh);
-    };
+    });
+  }
 
-    place(box(TILE, 0.17, 0.07), 0.085, trimMaterial);                      // skirting
-    if (this.def.ceiling !== false) {
-      place(box(TILE, 0.13, 0.13), this.wallHeight - 0.07, trimMaterial);   // cornice
+  // --- lighting -------------------------------------------------------------
+
+  /**
+   * Fixtures follow the room, not a modulo pattern: a chandelier hangs in the
+   * middle of the hall, sconces run the walls of a corridor at even spacing,
+   * a bare bulb dangles in the scullery.
+   */
+  #buildRoomLights() {
+    const byRoom = this.#roomTileIndex();
+    // Real point lights are the most expensive thing in the frame, and the
+    // volumetric march integrates over every one of them. The level gets a
+    // fixed budget, handed out round-robin: every room is guaranteed its first
+    // fixture before any room gets its second, so running out of budget dims
+    // the big rooms rather than leaving a small one pitch black.
+    const budget = this.def.lightBudget ?? 30;
+    const queues = [];
+
+    byRoom.forEach((tiles, id) => {
+      const style = roomType(this.rooms[id]?.type);
+      const spec = style.light || {};
+      if (!spec.fixture || spec.fixture === 'none' || spec.rule === 'none') return;
+      const factory = PROPS[FIXTURES[spec.fixture]] || PROPS.sconce;
+      const queue = [];
+
+      if (spec.rule === 'centre' || spec.rule === 'both') {
+        const centre = this.#centreTile(tiles);
+        if (centre) queue.push({ kind: 'centre', factory, spec, at: centre });
+      }
+
+      if (spec.rule === 'rhythm' || spec.rule === 'both') {
+        // a chandelier is a ceiling fitting and a candlestick stands on the
+        // floor; on a wall run both become a sconce
+        const hanging = spec.fixture === 'chandelier' || spec.fixture === 'gasolier';
+        const wallFactory = hanging || spec.fixture === 'candles' ? PROPS.sconce : factory;
+        const edges = this.#wallEdges(tiles).filter(([c, r]) => !this.occupied.has(`${c},${r}`));
+        // one fitting per ~14 tiles of floor, never more than five in a room,
+        // spread evenly around whatever wall the room actually has
+        const wanted = Math.min(5, Math.max(1, Math.round(tiles.length / 14)));
+        const spacing = Math.max(1, Math.floor(edges.length / wanted));
+        for (let i = 0, hung = 0; i < edges.length && hung < wanted; i += spacing, hung += 1) {
+          queue.push({ kind: 'wall', factory: wallFactory, spec, at: edges[i] });
+        }
+      }
+      if (queue.length) queues.push(queue);
+    });
+
+    let spent = 0;
+    for (let round = 0; spent < budget; round += 1) {
+      let placedAny = false;
+      for (let q = 0; q < queues.length && spent < budget; q += 1) {
+        const item = queues[q][round];
+        if (!item) continue;
+        placedAny = true;
+        this.#hangFixture(item);
+        spent += 1;
+      }
+      if (!placedAny) break;
+    }
+  }
+
+  #hangFixture({ kind, factory, spec, at }) {
+    const node = factory(this.materials);
+    if (node.userData.light) {
+      if (spec.colour) node.userData.light.color.setHex(spec.colour);
+      if (spec.intensity) node.userData.light.intensity = spec.intensity;
+    }
+    // merge first: mergeGroup bakes transforms, so it must run untouched
+    const placed = node.userData.merge === false ? node : mergeGroup(node);
+
+    if (kind === 'centre') {
+      const [col, row] = at;
+      const p = this.toWorld(col, row);
+      placed.position.set(p.x, this.wallHeight, p.z);
+      this.occupied.add(`${col},${row}`);
+    } else {
+      const [col, row, dc, dr, yaw] = at;
+      const p = this.toWorld(col, row);
+      placed.position.set(
+        p.x + dc * TILE * 0.44,
+        Math.min(2.15, this.wallHeight * 0.55),
+        p.z + dr * TILE * 0.44
+      );
+      placed.rotation.y = yaw;
+    }
+    this.group.add(placed);
+    this.props.push(placed);
+    if (placed.userData.light) this.lights.push(placed.userData.light);
+  }
+
+  /** tiles grouped by room id, walkable only. */
+  #roomTileIndex() {
+    const byRoom = new Map();
+    if (!this.zones) return byRoom;
+    this.floorKind.forEach((kind, key) => {
+      const [col, row] = key.split(',').map(Number);
+      const id = this.zones[row * this.cols + col];
+      if (id < 0) return;
+      if (!byRoom.has(id)) byRoom.set(id, []);
+      byRoom.get(id).push([col, row]);
+    });
+    return byRoom;
+  }
+
+  #centreTile(tiles) {
+    if (!tiles.length) return null;
+    let sc = 0;
+    let sr = 0;
+    tiles.forEach(([c, r]) => { sc += c; sr += r; });
+    const cc = sc / tiles.length;
+    const rr = sr / tiles.length;
+    let best = null;
+    let bestD = 1e9;
+    tiles.forEach(([c, r]) => {
+      if (this.isSolid(c, r)) return;
+      const d = Math.hypot(c - cc, r - rr);
+      if (d < bestD) { bestD = d; best = [c, r]; }
+    });
+    return best;
+  }
+
+  /** Wall-adjacent tiles of a room, as [col,row,dc,dr,yaw], in a stable order. */
+  #wallEdges(tiles) {
+    const edges = [];
+    tiles.forEach(([col, row]) => {
+      DIRS.forEach(([dc, dr, yaw]) => {
+        if (this.isSolid(col + dc, row + dr)) edges.push([col, row, dc, dr, yaw]);
+      });
+    });
+    return edges;
+  }
+
+  // --- dressing -------------------------------------------------------------
+
+  /**
+   * Furnishes each room from its type. Circulation is protected first: door
+   * tiles and a straight run from every doorway to the room centre are
+   * reserved before a single stick of furniture goes down, so a dressed room
+   * can never seal itself off.
+   */
+  #dressRooms() {
+    const byRoom = this.#roomTileIndex();
+    if (!byRoom.size) return;
+
+    // reserve doorways and their approaches
+    this.doors.forEach(({ col, row }) => {
+      this.occupied.add(`${col},${row}`);
+      DIRS.forEach(([dc, dr]) => this.occupied.add(`${col + dc},${row + dr}`));
+    });
+    this.rugTiles = new Set();
+
+    byRoom.forEach((tiles, id) => {
+      const room = this.rooms[id];
+      const style = roomType(room?.type);
+      const dressing = style.dressing || [];
+      if (!dressing.length) return;
+      const centre = this.#centreTile(tiles);
+      if (!centre) return;
+
+      // an L-shaped lane from each doorway to the room centre stays clear
+      const inRoom = new Set(tiles.map(([c, r]) => `${c},${r}`));
+      this.doors.forEach(({ col, row }) => {
+        DIRS.forEach(([dc, dr]) => {
+          const key = `${col + dc},${row + dr}`;
+          if (!inRoom.has(key)) return;
+          this.#reserveLane(col + dc, row + dr, centre[0], centre[1]);
+        });
+      });
+
+      const random = rng(id * 977 + 13);
+      const free = tiles.filter(([c, r]) => !this.occupied.has(`${c},${r}`));
+      const edges = this.#wallEdges(tiles).filter(([c, r]) => !this.occupied.has(`${c},${r}`));
+      shuffle(edges, random);
+      shuffle(free, random);
+      const placedByProp = new Map();
+
+      const ordered = [...dressing].sort((a, b) => (b.priority ? 1 : 0) - (a.priority ? 1 : 0));
+      ordered.forEach((entry) => {
+        if (!PROPS[entry.prop]) return;
+        const count = entry.n ?? 1;
+        for (let k = 0; k < count; k += 1) {
+          const node = this.#placeDressing(entry, {
+            tiles, free, edges, centre, random, placedByProp, style, room,
+            variant: VARIED.has(entry.prop) ? (id + k) % 3 : 0,
+          });
+          if (!node) break;
+        }
+      });
+    });
+  }
+
+  /** Marks the L-path between two tiles as reserved circulation. */
+  #reserveLane(c0, r0, c1, r1) {
+    const step = (a, b) => (a === b ? 0 : (b > a ? 1 : -1));
+    let c = c0;
+    let r = r0;
+    let guard = 0;
+    while ((c !== c1 || r !== r1) && guard++ < 80) {
+      this.occupied.add(`${c},${r}`);
+      if (c !== c1) c += step(c, c1);
+      else r += step(r, r1);
+    }
+    this.occupied.add(`${c1},${r1}`);
+  }
+
+  #placeDressing(entry, ctx) {
+    const { free, edges, centre, random, placedByProp, variant } = ctx;
+    const type = entry.prop;
+    const at = entry.at || 'free';
+
+    if (at.startsWith('around:')) {
+      const anchor = placedByProp.get(at.slice(7));
+      if (!anchor) return null;
+      const index = (placedByProp.get(`${at}#count`) || 0);
+      placedByProp.set(`${at}#count`, index + 1);
+      const ring = [[-1.0, 0.55], [0, 0.75], [1.0, 0.55], [-1.0, -0.55], [0, -0.75], [1.0, -0.55]];
+      const [ox, oz] = ring[index % ring.length];
+      const node = this.#instantiate(type, {
+        x: anchor.x + ox * 1.05, z: anchor.z + oz * 1.15,
+        yaw: oz > 0 ? Math.PI : 0, collide: false, variant,
+      });
+      return node;
+    }
+
+    if (at === 'centre') {
+      const [c, r] = centre;
+      const p = this.toWorld(c, r);
+      // A dining table dropped into a box room would wall the player in, so a
+      // centre piece only goes down if the room can take it with a walkable
+      // margin on every side.
+      const fit = this.#template(type, variant).userData.collider;
+      const rect = ctx.room?.rect;
+      if (fit && rect) {
+        const roomW = rect.w * TILE;
+        const roomD = rect.h * TILE;
+        if (fit.w + TILE * 1.4 > roomW || fit.d + TILE * 1.4 > roomD) return null;
+      }
+      const node = this.#instantiate(type, { x: p.x, z: p.z, yaw: 0, variant });
+      if (node) {
+        placedByProp.set(entry.prop, { x: p.x, z: p.z });
+        if (node.userData.rug) this.#layRug(node, c, r);
+      }
+      return node;
+    }
+
+    if (at === 'ceiling') {
+      const [c, r] = centre;
+      const p = this.toWorld(c, r);
+      return this.#instantiate(type, { x: p.x, z: p.z, y: this.wallHeight, collide: false, variant });
+    }
+
+    if (at === 'wall' || at === 'window' || at === 'corner' || at === 'rhythm') {
+      while (edges.length) {
+        const [col, row, dc, dr, yaw] = edges.shift();
+        if (this.occupied.has(`${col},${row}`)) continue;
+        const p = this.toWorld(col, row);
+        const hang = entry.hangHeight !== undefined;
+        const node = this.#instantiate(type, {
+          x: p.x + dc * TILE * (hang ? 0.47 : 0.24),
+          z: p.z + dr * TILE * (hang ? 0.47 : 0.24),
+          y: entry.hangHeight ?? 0,
+          yaw,
+          collide: !hang,
+          variant,
+        });
+        if (!node) continue;
+        if (!hang) {
+          this.occupied.add(`${col},${row}`);
+          placedByProp.set(entry.prop, { x: p.x, z: p.z });
+        }
+        return node;
+      }
+      return null;
+    }
+
+    // 'free'
+    while (free.length) {
+      const [col, row] = free.shift();
+      if (this.occupied.has(`${col},${row}`)) continue;
+      const p = this.toWorld(col, row);
+      const node = this.#instantiate(type, {
+        x: p.x + (random() - 0.5) * TILE * 0.3,
+        z: p.z + (random() - 0.5) * TILE * 0.3,
+        yaw: random() * Math.PI * 2,
+        variant,
+      });
+      if (!node) continue;
+      this.occupied.add(`${col},${row}`);
+      placedByProp.set(entry.prop, { x: p.x, z: p.z });
+      return node;
+    }
+    return null;
+  }
+
+  /** A rug makes the tiles it covers sound like carpet underfoot. */
+  #layRug(node, col, row) {
+    const { w, d } = node.userData.rug;
+    const rc = Math.ceil(w / TILE / 2);
+    const rr = Math.ceil(d / TILE / 2);
+    for (let r = row - rr; r <= row + rr; r += 1) {
+      for (let c = col - rc; c <= col + rc; c += 1) {
+        if (this.floorKind.has(`${c},${r}`)) this.floorKind.set(`${c},${r}`, 'carpet');
+      }
     }
   }
 
   /**
-   * Wall lights on a regular rhythm — placed against walls, never floating,
-   * and spaced so a corridor reads as lit at intervals rather than at random.
+   * A merged, reusable blueprint of one prop. Built once per type; every
+   * placement after that reuses the same geometry, which is what keeps a
+   * fully furnished house inside a sane draw-call budget.
    */
-  #buildSconces() {
-    if (this.def.sconces === false) return;
-    const m = this.materials;
-    const spacing = this.def.sconceSpacing ?? 5;
-    const tint = this.def.sconceColor ?? 0xffa851;
-    let placed = 0;
-    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
-
-    this.floorKind.forEach((kind, key) => {
-      if (placed >= (this.def.sconceLimit ?? 26)) return;
-      const [col, row] = key.split(',').map(Number);
-      // deterministic rhythm rather than random scatter
-      if ((col * 3 + row * 5) % spacing !== 0) return;
-      const dir = DIRS.find(([dc, dr]) => this.isSolid(col + dc, row + dr));
-      if (!dir) return;
-      const [dc, dr, yaw] = dir;
-      const p = this.toWorld(col, row);
-      const node = new THREE.Group();
-      node.position.set(p.x + dc * TILE * 0.44, 0, p.z + dr * TILE * 0.44);
-      node.rotation.y = yaw;
-      const h = Math.min(2.15, this.wallHeight * 0.55);
-      node.add(part(box(0.16, 0.30, 0.05), m.metal, 0, h, 0));                 // back plate
-      node.add(part(new THREE.CylinderGeometry(0.02, 0.02, 0.22, 6), m.metal, 0, h + 0.02, 0.11, [Math.PI / 2.6, 0, 0]));
-      node.add(part(new THREE.CylinderGeometry(0.075, 0.045, 0.16, 8, 1, true), m.metal, 0, h + 0.16, 0.20));
-      const wax = new THREE.MeshStandardMaterial({ color: 0xe6d9bd, roughness: 0.85 });
-      node.add(part(new THREE.CylinderGeometry(0.028, 0.032, 0.14, 8), wax, 0, h + 0.26, 0.20));
-      const light = new THREE.PointLight(tint, 13, 8.5, 1.6);
-      light.position.set(0, h + 0.36, 0.22);
-      node.add(light);
-      node.userData.light = light;
-      node.userData.flicker = true;
-      this.group.add(node);
-      this.props.push(node);
-      this.lights.push(light);
-      placed += 1;
-    });
+  #template(type, variant = 0) {
+    const key = `${type}#${variant}`;
+    const hit = this.templates.get(key);
+    if (hit) return hit;
+    const node = PROPS[type](this.materials, variant);
+    const dynamic = node.userData.merge === false
+      || node.userData.swings
+      || !!node.userData.light;
+    const merged = dynamic ? null : mergeGroup(node);
+    const template = {
+      type,
+      variant,
+      dynamic,
+      userData: node.userData,
+      ownYaw: node.rotation?.y || 0,
+      parts: merged
+        ? merged.children.filter((c) => c.isMesh).map((c) => ({ geometry: c.geometry, material: c.material }))
+        : null,
+    };
+    this.templates.set(key, template);
+    return template;
   }
 
-  /** Windows punched into the walls that face outside, with night behind them. */
-  #buildWindows() {
-    if (this.def.windows === false) return;
-    const m = this.materials;
-    const DIRS = [[0, -1, 0], [1, 0, Math.PI / 2], [0, 1, Math.PI], [-1, 0, -Math.PI / 2]];
-    const night = new THREE.MeshStandardMaterial({
-      color: 0x0b1220, emissive: 0x25406e, emissiveIntensity: 0.85, roughness: 0.25, metalness: 0.1,
-    });
-    night.userData.reflectivity = 0.35;
-    let placed = 0;
+  /**
+   * Records a placement. Static props are queued and flushed into instanced
+   * meshes later; anything carrying a light or an animation is built there and
+   * then, because it needs its own scene node.
+   */
+  #instantiate(type, { x, z, y = 0, yaw = 0, collide = true, variant = 0 }) {
+    if (!PROPS[type]) return null;
+    const template = this.#template(type, variant);
 
-    this.floorKind.forEach((kind, key) => {
-      if (placed >= (this.def.windowLimit ?? 14)) return;
-      const [col, row] = key.split(',').map(Number);
-      if ((col * 7 + row * 11) % 6 !== 0) return;
-      const dir = DIRS.find(([dc, dr]) => {
-        // the wall must be solid AND have open void directly behind it
-        if (!this.isSolid(col + dc, row + dr)) return false;
-        return this.charAt(col + dc * 2, row + dr * 2) === ' ';
+    if (template.dynamic) {
+      const node = PROPS[type](this.materials, variant);
+      const merge = node.userData.merge !== false;
+      const own = merge ? 0 : (node.rotation?.y || 0);
+      const placed = merge ? mergeGroup(node) : node;
+      placed.position.set(x, y, z);
+      placed.rotation.y = yaw + own;
+      this.group.add(placed);
+      this.props.push(placed);
+      if (placed.userData.light) this.lights.push(placed.userData.light);
+      this.#addCollider(placed.userData.collider, x, z, collide);
+      this.dressed.push({ type, x, y, z });
+      return placed;
+    }
+
+    const key = `${type}#${variant}`;
+    if (!this.pending.has(key)) this.pending.set(key, { template, items: [] });
+    this.pending.get(key).items.push({ x, y, z, yaw });
+    this.#addCollider(template.userData.collider, x, z, collide);
+    // Instanced props never become scene nodes of their own, so record them
+    // here — otherwise there is no way to ask "is this room actually dressed?"
+    this.dressed.push({ type, x, y, z });
+    // a light-weight handle so callers can read userData without a scene node
+    return { userData: template.userData, position: new THREE.Vector3(x, y, z) };
+  }
+
+  #addCollider(collider, x, z, collide) {
+    if (!collide || !collider) return;
+    this.propColliders.push({ x, z, w: collider.w, d: collider.d });
+  }
+
+  /** Turns every queued placement into one instanced mesh per material part. */
+  #flushProps() {
+    const dummy = new THREE.Object3D();
+    this.pending.forEach(({ template, items }) => {
+      template.parts.forEach(({ geometry, material }) => {
+        const mesh = new THREE.InstancedMesh(geometry, material, items.length);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        items.forEach((it, i) => {
+          dummy.position.set(it.x, it.y, it.z);
+          dummy.rotation.set(0, it.yaw, 0);
+          dummy.scale.set(1, 1, 1);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        this.group.add(mesh);
       });
-      if (!dir) return;
-      const [dc, dr, yaw] = dir;
-      const p = this.toWorld(col, row);
-      const node = new THREE.Group();
-      node.position.set(p.x + dc * TILE * 0.49, 0, p.z + dr * TILE * 0.49);
-      node.rotation.y = yaw;
-      const sill = Math.min(1.05, this.wallHeight * 0.28);
-      const h = Math.min(1.35, this.wallHeight * 0.42);
-      const w = TILE * 0.62;
-      node.add(part(box(w, h, 0.05), night, 0, sill + h / 2, 0.03));           // the night outside
-      node.add(part(box(w, h, 0.03), m.glass, 0, sill + h / 2, 0.06));
-      // casing, mullion and sill
-      node.add(part(box(w + 0.18, 0.10, 0.14), m.trim, 0, sill + h + 0.05, 0.07));
-      node.add(part(box(w + 0.18, 0.12, 0.22), m.trim, 0, sill - 0.05, 0.09));
-      [-1, 1].forEach((side) => {
-        node.add(part(box(0.09, h + 0.1, 0.14), m.trim, side * (w / 2 + 0.045), sill + h / 2, 0.07));
-      });
-      node.add(part(box(0.05, h, 0.10), m.trim, 0, sill + h / 2, 0.08));
-      node.add(part(box(w, 0.05, 0.10), m.trim, 0, sill + h * 0.5, 0.08));
-      this.group.add(node);
-      placed += 1;
     });
+    this.pending.clear();
   }
 
   placeProp(spec) {
@@ -57815,20 +59997,27 @@ Level = class Level {
     const created = [];
     positions.forEach(([col, row]) => {
       const node = factory(this.materials);
+      const merge = node.userData.merge !== false;
+      const own = merge ? 0 : (node.rotation?.y || 0);
+      const placed = merge ? mergeGroup(node) : node;
       const p = this.toWorld(col, row);
-      node.position.set(p.x + (spec.offset?.[0] || 0), spec.y ?? 0, p.z + (spec.offset?.[1] || 0));
-      if (spec.rotation !== undefined) node.rotation.y = spec.rotation;
-      if (spec.hang) node.position.y = this.wallHeight;
-      this.group.add(node);
-      this.props.push(node);
-      created.push(node);
-      if (node.userData.light) this.lights.push(node.userData.light);
-      if (node.userData.collider) {
+      placed.position.set(
+        p.x + (spec.offset?.[0] || 0),
+        spec.hang ? this.wallHeight : (spec.y ?? 0),
+        p.z + (spec.offset?.[1] || 0)
+      );
+      placed.rotation.y = spec.rotation !== undefined ? spec.rotation : own;
+      this.group.add(placed);
+      this.props.push(placed);
+      created.push(placed);
+      this.occupied.add(`${col},${row}`);
+      if (placed.userData.light) this.lights.push(placed.userData.light);
+      if (placed.userData.collider) {
         this.propColliders.push({
-          x: node.position.x,
-          z: node.position.z,
-          w: node.userData.collider.w,
-          d: node.userData.collider.d,
+          x: placed.position.x,
+          z: placed.position.z,
+          w: placed.userData.collider.w,
+          d: placed.userData.collider.d,
         });
       }
     });
@@ -57954,7 +60143,6 @@ Level = class Level {
           const nc = current.c + dc;
           const nr = current.r + dr;
           if (this.isSolid(nc, nr)) continue;
-          // no cutting corners diagonally
           if (dc !== 0 && dr !== 0 && (this.isSolid(current.c + dc, current.r) || this.isSolid(current.c, current.r + dr))) continue;
           const nk = key(nc, nr);
           if (closed.has(nk)) continue;
@@ -57995,11 +60183,19 @@ Level = class Level {
 
   dispose() {
     this.group.traverse((obj) => {
-      if (obj.isMesh) {
-        obj.geometry?.dispose?.();
-      }
+      if (obj.isMesh) obj.geometry?.dispose?.();
     });
   }
+}
+
+function shuffle(list, random) {
+  for (let i = list.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    const tmp = list[i];
+    list[i] = list[j];
+    list[j] = tmp;
+  }
+  return list;
 }
 
 buildLevel = function buildLevel(def, textures) {
@@ -58978,7 +61174,7 @@ Environment = class Environment {
 
 
 /* ===== src/game/levels.js ===== */
-var LEVELS, levelByIndex;
+var ROOM_TYPES, roomType, LEVELS, levelByIndex;
 {
 // ---------------------------------------------------------------------------
 // Level blueprints.
@@ -58989,20 +61185,352 @@ var LEVELS, levelByIndex;
 // tune sight lines and encounter spacing.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ROOM_TYPES — what actually makes a kitchen look like a kitchen.
+//
+// A room type declares its floor, its wall build-up (skirting → wainscot →
+// dado rail → field covering → picture rail → cornice), its ceiling, the light
+// fixture it hangs, and the furniture the auto-dresser puts in it. Every
+// chapter draws on this one table, which is why five levels no longer look
+// like the same grey box five times.
+//
+// Colourways ride on `tint`: the papers are baked tone-on-tone (the pattern is
+// carried by sheen and relief, not hue) so one texture serves every room.
+// ---------------------------------------------------------------------------
+
+ROOM_TYPES = {
+  // --- the formal rooms ----------------------------------------------------
+  hall: {
+    floor: 'marbleCheck',
+    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
+    light: { fixture: 'chandelier', rule: 'both', colour: 0xffb877, intensity: 30 },
+    dressing: [
+      { prop: 'longcaseClock', at: 'wall', n: 1 },
+      { prop: 'hallStand', at: 'wall', n: 1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+      { prop: 'chair', at: 'wall', n: 2 },
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.3 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+    ],
+  },
+  drawing: {
+    floor: 'parquet', floorTint: 0xd8b48c,
+    wall: { field: 'damask', tint: 0xa8434a, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
+    light: { fixture: 'chandelier', rule: 'both', colour: 0xffc089, intensity: 26 },
+    dressing: [
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'chaise', at: 'wall', n: 1 },
+      { prop: 'wingChair', at: 'wall', n: 2 },
+      { prop: 'sideTable', at: 'wall', n: 2 },
+      { prop: 'mirror', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.2 },
+      { prop: 'curtain', at: 'window', n: 4 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+      { prop: 'footstool', at: 'free', n: 2 },
+    ],
+  },
+  dining: {
+    floor: 'parquet', floorTint: 0xa8815c,
+    wall: { field: 'flock', tint: 0x8f3038, wainscot: 'oakPanel', dado: 1.30, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'beams' },
+    light: { fixture: 'gasolier', rule: 'centre', colour: 0xffb066, intensity: 24 },
+    dressing: [
+      { prop: 'diningTable', at: 'centre', n: 1 },
+      { prop: 'carverChair', at: 'around:diningTable', n: 6 },
+      { prop: 'sideboard', at: 'wall', n: 1 },
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 3, hangHeight: 2.3 },
+      { prop: 'curtain', at: 'window', n: 2 },
+    ],
+  },
+  library: {
+    floor: 'parquet', floorTint: 0x9a7550,
+    wall: { field: 'damask', tint: 0x6d7d5e, wainscot: 'oakPanel', dado: 0.90, rail: true, picture: true },
+    ceiling: { material: 'oakPanel', treatment: 'coffer' },
+    light: { fixture: 'gasolier', rule: 'both', colour: 0xffcf9a, intensity: 20 },
+    dressing: [
+      { prop: 'bookcase', at: 'wall', n: 8, priority: true },
+      { prop: 'readingDesk', at: 'centre', n: 1 },
+      { prop: 'wingChair', at: 'free', n: 2 },
+      { prop: 'globe', at: 'free', n: 1 },
+      { prop: 'librarySteps', at: 'free', n: 1 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+      { prop: 'bookStack', at: 'free', n: 3 },
+    ],
+  },
+  study: {
+    floor: 'parquet', floorTint: 0x9a7550,
+    wall: { field: 'damask', tint: 0x9c7c48, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffc27a, intensity: 15 },
+    dressing: [
+      { prop: 'readingDesk', at: 'centre', n: 1 },
+      { prop: 'bookcase', at: 'wall', n: 3 },
+      { prop: 'wingChair', at: 'free', n: 1 },
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 2, hangHeight: 2.1 },
+      { prop: 'bookStack', at: 'free', n: 2 },
+    ],
+  },
+  bedroom: {
+    floor: 'woodFloor',
+    wall: { field: 'floralPaper', tint: 0xb08a86, wainscot: null, dado: 0, rail: false, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffbe80, intensity: 13 },
+    dressing: [
+      { prop: 'brassBed', at: 'wall', n: 1, priority: true },
+      { prop: 'wardrobe', at: 'wall', n: 1 },
+      { prop: 'washstand', at: 'wall', n: 1 },
+      { prop: 'dressingTable', at: 'wall', n: 1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+      { prop: 'curtain', at: 'window', n: 2 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+    ],
+  },
+
+  // --- below stairs --------------------------------------------------------
+  kitchen: {
+    floor: 'quarryTile',
+    wall: { field: 'glazedBrick', tint: 0xdedbd2, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'beams' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffd39a, intensity: 16 },
+    dressing: [
+      { prop: 'range', at: 'wall', n: 1, priority: true },
+      { prop: 'kitchenDresser', at: 'wall', n: 1, priority: true },
+      { prop: 'stoneSink', at: 'wall', n: 1 },
+      { prop: 'larderShelf', at: 'wall', n: 2 },
+      { prop: 'table', at: 'centre', n: 1 },
+      { prop: 'chair', at: 'around:table', n: 3 },
+      { prop: 'potRack', at: 'ceiling', n: 1 },
+      { prop: 'pot', at: 'free', n: 3 },
+    ],
+  },
+  scullery: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xcfcabd, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'bareBulb', rule: 'centre', colour: 0xffe2b0, intensity: 12 },
+    dressing: [
+      { prop: 'stoneSink', at: 'wall', n: 1, priority: true },
+      { prop: 'larderShelf', at: 'wall', n: 2 },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'pot', at: 'free', n: 4 },
+      { prop: 'clothPile', at: 'free', n: 2 },
+    ],
+  },
+  pantry: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xd4cfc2, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffc98a, intensity: 9 },
+    dressing: [
+      { prop: 'larderShelf', at: 'wall', n: 4, priority: true },
+      { prop: 'bottle', at: 'free', n: 5 },
+      { prop: 'crate', at: 'free', n: 2 },
+    ],
+  },
+  passage: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xc6c1b4, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'bareBulb', rule: 'rhythm', colour: 0xffdcae, intensity: 10 },
+    dressing: [
+      { prop: 'bellBoard', at: 'wall', n: 1 },
+      { prop: 'coatHooks', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 1 },
+    ],
+  },
+  corridor: {
+    floor: 'woodFloor',
+    wall: { field: 'damask', tint: 0x8a7355, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 12 },
+    dressing: [
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+    ],
+  },
+  stairwell: {
+    floor: 'woodFloor',
+    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 13 },
+    dressing: [{ prop: 'pictureFrame', at: 'wall', n: 3, hangHeight: 2.4 }],
+  },
+  cloakroom: {
+    floor: 'tileFloor',
+    wall: { field: 'glazedBrick', tint: 0xd8d4cb, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffc07a, intensity: 8 },
+    dressing: [
+      { prop: 'coatHooks', at: 'wall', n: 1 },
+      { prop: 'washstand', at: 'wall', n: 1 },
+    ],
+  },
+
+  // --- the cellars ---------------------------------------------------------
+  cellar: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xbba393, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x9fd0e4, intensity: 14 },
+    dressing: [
+      { prop: 'crate', at: 'free', n: 3 },
+      { prop: 'barrel', at: 'free', n: 2 },
+    ],
+  },
+  cellarCoal: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x9c8878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc0d8, intensity: 11 },
+    dressing: [
+      { prop: 'coalPile', at: 'corner', n: 2, priority: true },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 2 },
+    ],
+  },
+  cellarBoiler: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0xa89080, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0xffa060, intensity: 15 },
+    dressing: [
+      { prop: 'boiler', at: 'wall', n: 1, priority: true },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'barrel', at: 'free', n: 2 },
+      { prop: 'coalPile', at: 'corner', n: 1 },
+    ],
+  },
+  cellarWine: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xb09884, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffbf80, intensity: 10 },
+    dressing: [
+      { prop: 'wineRack', at: 'wall', n: 4, priority: true },
+      { prop: 'barrel', at: 'free', n: 2 },
+      { prop: 'bottle', at: 'free', n: 4 },
+    ],
+  },
+  cistern: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x8fa0a0, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc8e0, intensity: 13 },
+    dressing: [{ prop: 'barrel', at: 'free', n: 2 }],
+  },
+  ritual: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x9a7a72, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 12 },
+    dressing: [{ prop: 'candle', at: 'wall', n: 5 }],
+  },
+
+  // --- the chapel and the arena -------------------------------------------
+  nave: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0xa8a096, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa851, intensity: 14 },
+    dressing: [{ prop: 'candle', at: 'wall', n: 6 }],
+  },
+  aisle: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0x9a938a, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 10 },
+    dressing: [{ prop: 'pillar', at: 'rhythm', n: 4, priority: true }],
+  },
+  arena: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0xb08878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xff7a3a, intensity: 16 },
+    dressing: [
+      { prop: 'pillar', at: 'corner', n: 4 },
+      { prop: 'rubble', at: 'free', n: 5 },
+    ],
+  },
+
+  // --- outdoors ------------------------------------------------------------
+  porch: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xa08878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0xffc07a, intensity: 16 },
+    dressing: [{ prop: 'umbrellaStand', at: 'wall', n: 1 }],
+  },
+  drive: {
+    floor: 'concrete', char: '%',
+    wall: { field: 'redBrick', tint: 0x92806f, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x9fc4ff, intensity: 18 },
+    dressing: [],
+  },
+  garden: {
+    floor: 'grass', char: ';',
+    wall: { field: 'redBrick', tint: 0x8a7868, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'none', rule: 'none' },
+    dressing: [{ prop: 'rubble', at: 'free', n: 3 }],
+  },
+  shed: {
+    floor: 'woodFloor',
+    wall: { field: 'oakPanel', tint: 0xa08868, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'oakPanel', treatment: 'beams' },
+    light: { fixture: 'lantern', rule: 'centre', colour: 0xffd0a0, intensity: 14 },
+    dressing: [
+      { prop: 'workbench', at: 'wall', n: 1, priority: true },
+      { prop: 'larderShelf', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 2 },
+      { prop: 'barrel', at: 'free', n: 1 },
+    ],
+  },
+
+  // fallback for anything unclassified
+  plain: {
+    floor: 'woodFloor',
+    wall: { field: 'wallPaper', tint: 0xffffff, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffa851, intensity: 12 },
+    dressing: [],
+  },
+};
+
+roomType = function roomType(name) {
+  return ROOM_TYPES[name] || ROOM_TYPES.plain;
+}
+
 function rasterize(blueprint) {
   const { size, rooms = [], walls = [], doors = [], markers = {} } = blueprint;
   const [W, H] = size;
   const grid = Array.from({ length: H }, () => new Array(W).fill(' '));
   const wallPref = Array.from({ length: H }, () => new Array(W).fill(null));
+  // Which room owns each cell. This is the thing the old rasterizer threw
+  // away, and the reason every room in a chapter used to look identical: the
+  // builder never learned that this tile was a kitchen and that one a library.
+  const zones = new Int16Array(W * H).fill(-1);
+  const index = [];
 
   const inside = (x, y) => x >= 0 && x < W && y >= 0 && y < H;
 
   // 1. carve every walkable rectangle
-  rooms.forEach((room) => {
+  rooms.forEach((room, id) => {
+    index.push({
+      id,
+      type: room.type || 'plain',
+      name: room.name || '',
+      rect: { x: room.x, y: room.y, w: room.w, h: room.h },
+    });
     for (let y = room.y; y < room.y + room.h; y += 1) {
       for (let x = room.x; x < room.x + room.w; x += 1) {
         if (!inside(x, y)) continue;
-        grid[y][x] = room.floor || '.';
+        grid[y][x] = room.floor || ROOM_TYPES[room.type]?.char || '.';
+        zones[y * W + x] = id;
       }
     }
     // remember which wall style should surround this space
@@ -59053,7 +61581,7 @@ function rasterize(blueprint) {
     spots.forEach(([x, y]) => { if (inside(x, y)) grid[y][x] = ch; });
   });
 
-  return grid.map((row) => row.join(''));
+  return { grid: grid.map((row) => row.join('')), zones, rooms: index, cols: W, rows: H };
 }
 
 // ---------------------------------------------------------------------------
@@ -59085,14 +61613,14 @@ const CH1 = {
   blueprint: rasterize({
     size: [34, 28],
     rooms: [
-      { x: 13, y: 2, w: 8, h: 3, floor: '=', wall: 'X' },      // الشرفة
-      { x: 16, y: 5, w: 3, h: 2, floor: '=' },                  // الدرج
-      { x: 15, y: 7, w: 4, h: 19, floor: '%' },                 // الطريق
-      { x: 2, y: 8, w: 11, h: 15, floor: ';' },                 // حديقة غربية
-      { x: 21, y: 8, w: 11, h: 15, floor: ';' },                // حديقة شرقية
-      { x: 13, y: 15, w: 2, h: 3, floor: ';' },                 // ممر غربي
-      { x: 19, y: 12, w: 2, h: 3, floor: ';' },                 // ممر شرقي
-      { x: 4, y: 10, w: 5, h: 4, floor: '.', wall: 'X' },       // السقيفة
+      { x: 13, y: 2, w: 8, h: 3, floor: '=', wall: 'X', type: 'porch' },      // الشرفة
+      { x: 16, y: 5, w: 3, h: 2, floor: '=', type: 'porch' },                  // الدرج
+      { x: 15, y: 7, w: 4, h: 19, floor: '%', type: 'drive' },                 // الطريق
+      { x: 2, y: 8, w: 11, h: 15, floor: ';', type: 'garden' },                 // حديقة غربية
+      { x: 21, y: 8, w: 11, h: 15, floor: ';', type: 'garden' },                // حديقة شرقية
+      { x: 13, y: 15, w: 2, h: 3, floor: ';', type: 'garden' },                 // ممر غربي
+      { x: 19, y: 12, w: 2, h: 3, floor: ';', type: 'garden' },                 // ممر شرقي
+      { x: 4, y: 10, w: 5, h: 4, floor: '.', wall: 'X', type: 'shed' },       // السقيفة
     ],
     walls: [{ x: 3, y: 9, w: 7, h: 6, outline: true, char: 'X' }],
     doors: [[6, 14]],
@@ -59149,19 +61677,19 @@ const CH2 = {
   blueprint: rasterize({
     size: [40, 30],
     rooms: [
-      { x: 16, y: 20, w: 9, h: 8, floor: ',' },                 // البهو
-      { x: 19, y: 28, w: 3, h: 2, floor: '=' },                 // المدخل
-      { x: 8, y: 23, w: 8, h: 3, floor: '.' },                  // ممر غربي
-      { x: 2, y: 18, w: 10, h: 8, floor: '.' },                 // غرفة الطعام
-      { x: 5, y: 14, w: 3, h: 4, floor: '.' },                  // ممر المطبخ
-      { x: 2, y: 6, w: 9, h: 8, floor: '=' },                   // المطبخ
-      { x: 11, y: 10, w: 3, h: 3, floor: '=' },                 // وصلة المطبخ
-      { x: 14, y: 8, w: 13, h: 6, floor: '.' },                 // الصالة العليا
-      { x: 19, y: 14, w: 3, h: 6, floor: '.' },                 // الدرج الأوسط
-      { x: 25, y: 22, w: 2, h: 3, floor: '.' },                 // ممر شرقي
-      { x: 27, y: 17, w: 11, h: 9, floor: ',' },                // المكتبة
-      { x: 27, y: 10, w: 2, h: 3, floor: '.' },                 // وصلة القبو
-      { x: 29, y: 6, w: 8, h: 8, floor: '%', wall: 'X' },       // بسطة القبو
+      { x: 16, y: 20, w: 9, h: 8, floor: ',', type: 'hall' },                 // البهو
+      { x: 19, y: 28, w: 3, h: 2, floor: '=', type: 'porch' },                 // المدخل
+      { x: 8, y: 23, w: 8, h: 3, floor: '.', type: 'corridor' },                  // ممر غربي
+      { x: 2, y: 18, w: 10, h: 8, floor: '.', type: 'dining' },                 // غرفة الطعام
+      { x: 5, y: 14, w: 3, h: 4, floor: '.', type: 'passage' },                  // ممر المطبخ
+      { x: 2, y: 6, w: 9, h: 8, floor: '=', type: 'kitchen' },                   // المطبخ
+      { x: 11, y: 10, w: 3, h: 3, floor: '=', type: 'passage' },                 // وصلة المطبخ
+      { x: 14, y: 8, w: 13, h: 6, floor: '.', type: 'drawing' },                 // الصالة العليا
+      { x: 19, y: 14, w: 3, h: 6, floor: '.', type: 'stairwell' },                 // الدرج الأوسط
+      { x: 25, y: 22, w: 2, h: 3, floor: '.', type: 'corridor' },                 // ممر شرقي
+      { x: 27, y: 17, w: 11, h: 9, floor: ',', type: 'library' },                // المكتبة
+      { x: 27, y: 10, w: 2, h: 3, floor: '.', type: 'passage' },                 // وصلة القبو
+      { x: 29, y: 6, w: 8, h: 8, floor: '%', wall: 'X', type: 'scullery' },       // بسطة القبو
     ],
     // wall stubs beside each door so a closed door really blocks the opening
     walls: [
@@ -59252,16 +61780,16 @@ const CH3 = {
   blueprint: rasterize({
     size: [36, 28],
     rooms: [
-      { x: 16, y: 23, w: 6, h: 4, floor: '%' },                 // بسطة الدرج
-      { x: 18, y: 21, w: 3, h: 2, floor: '~' },
-      { x: 5, y: 17, w: 26, h: 4, floor: '~' },                 // الممر الغارق
-      { x: 6, y: 16, w: 3, h: 1, floor: '~' },
-      { x: 3, y: 8, w: 10, h: 8, floor: '%' },                  // غرفة المرجل
-      { x: 27, y: 15, w: 1, h: 2, floor: '~' },
-      { x: 25, y: 8, w: 8, h: 7, floor: '%' },                  // المخزن
-      { x: 14, y: 4, w: 10, h: 8, floor: '%' },                 // غرفة الطقوس
-      { x: 13, y: 9, w: 1, h: 3, floor: '%' },
-      { x: 24, y: 10, w: 1, h: 2, floor: '%' },
+      { x: 16, y: 23, w: 6, h: 4, floor: '%', type: 'cellar' },                 // بسطة الدرج
+      { x: 18, y: 21, w: 3, h: 2, floor: '~', type: 'cellar' },
+      { x: 5, y: 17, w: 26, h: 4, floor: '~', type: 'cistern' },                 // الممر الغارق
+      { x: 6, y: 16, w: 3, h: 1, floor: '~', type: 'cistern' },
+      { x: 3, y: 8, w: 10, h: 8, floor: '%', type: 'cellarBoiler' },                  // غرفة المرجل
+      { x: 27, y: 15, w: 1, h: 2, floor: '~', type: 'cistern' },
+      { x: 25, y: 8, w: 8, h: 7, floor: '%', type: 'cellarWine' },                  // المخزن
+      { x: 14, y: 4, w: 10, h: 8, floor: '%', type: 'ritual' },                 // غرفة الطقوس
+      { x: 13, y: 9, w: 1, h: 3, floor: '%', type: 'cellar' },
+      { x: 24, y: 10, w: 1, h: 2, floor: '%', type: 'cellar' },
     ],
     walls: [
       { x: 17, y: 7, w: 1, h: 1 }, { x: 20, y: 7, w: 1, h: 1 },
@@ -59332,9 +61860,9 @@ const CH4 = {
   blueprint: rasterize({
     size: [32, 30],
     rooms: [
-      { x: 14, y: 20, w: 4, h: 9, floor: '=' },                 // الممر
-      { x: 10, y: 14, w: 12, h: 6, floor: '=' },                // الردهة
-      { x: 6, y: 3, w: 20, h: 10, floor: '=' },                 // الصحن
+      { x: 14, y: 20, w: 4, h: 9, floor: '=', type: 'aisle' },                 // الممر
+      { x: 10, y: 14, w: 12, h: 6, floor: '=', type: 'aisle' },                // الردهة
+      { x: 6, y: 3, w: 20, h: 10, floor: '=', type: 'nave' },                 // الصحن
     ],
     walls: [
       { x: 6, y: 13, w: 20, h: 1 },
@@ -59399,7 +61927,7 @@ const CH5 = {
   blueprint: rasterize({
     size: [30, 30],
     rooms: [
-      { x: 4, y: 4, w: 22, h: 22, floor: '=' },
+      { x: 4, y: 4, w: 22, h: 22, floor: '=', type: 'arena' },
     ],
     walls: [
       { x: 8, y: 8, w: 2, h: 2 }, { x: 20, y: 8, w: 2, h: 2 },
@@ -61501,14 +64029,18 @@ var Game;
 
 
 
-
 const SAVE_KEY = 'bayt.almahjur.save';
 const SETTINGS_KEY = 'bayt.almahjur.settings';
 
 Game = class Game {
-  constructor(canvas) {
+  /**
+   * `textures` comes pre-baked from the loader so the boot screen can show
+   * real progress while the surfaces are generated — baking them in here
+   * froze the tab for the whole bake.
+   */
+  constructor(canvas, textures) {
     this.canvas = canvas;
-    this.textures = buildTextureLibrary();
+    this.textures = textures;
     this.rt = new RTRenderer(canvas, this.textures);
     this.audio = new AudioEngine();
     this.vocals = new Vocals(this.audio);
@@ -62628,6 +65160,7 @@ Game = class Game {
 
 
 
+
 const $ = (id) => document.getElementById(id);
 
 const screens = {
@@ -62649,13 +65182,22 @@ function show(name) {
 
 async function boot() {
   show('loading');
-  // let the loading screen paint before the (synchronous) texture bake
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  // The material library is a few dozen procedurally baked surfaces. It yields
+  // between each one, so the bar below actually moves instead of the tab
+  // locking up until it is finished.
+  const loadingText = $('loadingText');
+  const baseText = loadingText.innerHTML;
+  const textures = await buildTextureLibrary((done, total) => {
+    loadingText.innerHTML = `${baseText}<br><small>تجهيز الخامات ${done} / ${total}</small>`;
+  });
+  loadingText.innerHTML = baseText;
 
   const canvas = $('view');
   let game;
   try {
-    game = new Game(canvas);
+    game = new Game(canvas, textures);
   } catch (err) {
     console.error(err);
     $('loadingText').innerHTML = 'تعذّر تشغيل WebGL2 على هذا الجهاز.<br><small>جرّب متصفحاً آخر أو فعّل تسريع الرسوميات.</small>';

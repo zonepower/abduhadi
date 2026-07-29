@@ -1,6 +1,7 @@
 import { Game } from './game/game.js';
 import { QUALITY_PRESETS } from './engine/renderer.js';
 import { LEVELS } from './game/levels.js';
+import { buildTextureLibrary } from './engine/textures.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,13 +24,22 @@ function show(name) {
 
 async function boot() {
   show('loading');
-  // let the loading screen paint before the (synchronous) texture bake
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  // The material library is a few dozen procedurally baked surfaces. It yields
+  // between each one, so the bar below actually moves instead of the tab
+  // locking up until it is finished.
+  const loadingText = $('loadingText');
+  const baseText = loadingText.innerHTML;
+  const textures = await buildTextureLibrary((done, total) => {
+    loadingText.innerHTML = `${baseText}<br><small>تجهيز الخامات ${done} / ${total}</small>`;
+  });
+  loadingText.innerHTML = baseText;
 
   const canvas = $('view');
   let game;
   try {
-    game = new Game(canvas);
+    game = new Game(canvas, textures);
   } catch (err) {
     console.error(err);
     $('loadingText').innerHTML = 'تعذّر تشغيل WebGL2 على هذا الجهاز.<br><small>جرّب متصفحاً آخر أو فعّل تسريع الرسوميات.</small>';

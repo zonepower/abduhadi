@@ -7,20 +7,352 @@
 // tune sight lines and encounter spacing.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ROOM_TYPES — what actually makes a kitchen look like a kitchen.
+//
+// A room type declares its floor, its wall build-up (skirting → wainscot →
+// dado rail → field covering → picture rail → cornice), its ceiling, the light
+// fixture it hangs, and the furniture the auto-dresser puts in it. Every
+// chapter draws on this one table, which is why five levels no longer look
+// like the same grey box five times.
+//
+// Colourways ride on `tint`: the papers are baked tone-on-tone (the pattern is
+// carried by sheen and relief, not hue) so one texture serves every room.
+// ---------------------------------------------------------------------------
+
+export const ROOM_TYPES = {
+  // --- the formal rooms ----------------------------------------------------
+  hall: {
+    floor: 'marbleCheck',
+    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
+    light: { fixture: 'chandelier', rule: 'both', colour: 0xffb877, intensity: 30 },
+    dressing: [
+      { prop: 'longcaseClock', at: 'wall', n: 1 },
+      { prop: 'hallStand', at: 'wall', n: 1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+      { prop: 'chair', at: 'wall', n: 2 },
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.3 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+    ],
+  },
+  drawing: {
+    floor: 'parquet', floorTint: 0xd8b48c,
+    wall: { field: 'damask', tint: 0xa8434a, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
+    light: { fixture: 'chandelier', rule: 'both', colour: 0xffc089, intensity: 26 },
+    dressing: [
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'chaise', at: 'wall', n: 1 },
+      { prop: 'wingChair', at: 'wall', n: 2 },
+      { prop: 'sideTable', at: 'wall', n: 2 },
+      { prop: 'mirror', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.2 },
+      { prop: 'curtain', at: 'window', n: 4 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+      { prop: 'footstool', at: 'free', n: 2 },
+    ],
+  },
+  dining: {
+    floor: 'parquet', floorTint: 0xa8815c,
+    wall: { field: 'flock', tint: 0x8f3038, wainscot: 'oakPanel', dado: 1.30, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'beams' },
+    light: { fixture: 'gasolier', rule: 'centre', colour: 0xffb066, intensity: 24 },
+    dressing: [
+      { prop: 'diningTable', at: 'centre', n: 1 },
+      { prop: 'carverChair', at: 'around:diningTable', n: 6 },
+      { prop: 'sideboard', at: 'wall', n: 1 },
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 3, hangHeight: 2.3 },
+      { prop: 'curtain', at: 'window', n: 2 },
+    ],
+  },
+  library: {
+    floor: 'parquet', floorTint: 0x9a7550,
+    wall: { field: 'damask', tint: 0x6d7d5e, wainscot: 'oakPanel', dado: 0.90, rail: true, picture: true },
+    ceiling: { material: 'oakPanel', treatment: 'coffer' },
+    light: { fixture: 'gasolier', rule: 'both', colour: 0xffcf9a, intensity: 20 },
+    dressing: [
+      { prop: 'bookcase', at: 'wall', n: 8, priority: true },
+      { prop: 'readingDesk', at: 'centre', n: 1 },
+      { prop: 'wingChair', at: 'free', n: 2 },
+      { prop: 'globe', at: 'free', n: 1 },
+      { prop: 'librarySteps', at: 'free', n: 1 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+      { prop: 'bookStack', at: 'free', n: 3 },
+    ],
+  },
+  study: {
+    floor: 'parquet', floorTint: 0x9a7550,
+    wall: { field: 'damask', tint: 0x9c7c48, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffc27a, intensity: 15 },
+    dressing: [
+      { prop: 'readingDesk', at: 'centre', n: 1 },
+      { prop: 'bookcase', at: 'wall', n: 3 },
+      { prop: 'wingChair', at: 'free', n: 1 },
+      { prop: 'chimneypiece', at: 'wall', n: 1 },
+      { prop: 'pictureFrame', at: 'wall', n: 2, hangHeight: 2.1 },
+      { prop: 'bookStack', at: 'free', n: 2 },
+    ],
+  },
+  bedroom: {
+    floor: 'woodFloor',
+    wall: { field: 'floralPaper', tint: 0xb08a86, wainscot: null, dado: 0, rail: false, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffbe80, intensity: 13 },
+    dressing: [
+      { prop: 'brassBed', at: 'wall', n: 1, priority: true },
+      { prop: 'wardrobe', at: 'wall', n: 1 },
+      { prop: 'washstand', at: 'wall', n: 1 },
+      { prop: 'dressingTable', at: 'wall', n: 1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+      { prop: 'curtain', at: 'window', n: 2 },
+      { prop: 'rugMat', at: 'centre', n: 1 },
+    ],
+  },
+
+  // --- below stairs --------------------------------------------------------
+  kitchen: {
+    floor: 'quarryTile',
+    wall: { field: 'glazedBrick', tint: 0xdedbd2, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'beams' },
+    light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffd39a, intensity: 16 },
+    dressing: [
+      { prop: 'range', at: 'wall', n: 1, priority: true },
+      { prop: 'kitchenDresser', at: 'wall', n: 1, priority: true },
+      { prop: 'stoneSink', at: 'wall', n: 1 },
+      { prop: 'larderShelf', at: 'wall', n: 2 },
+      { prop: 'table', at: 'centre', n: 1 },
+      { prop: 'chair', at: 'around:table', n: 3 },
+      { prop: 'potRack', at: 'ceiling', n: 1 },
+      { prop: 'pot', at: 'free', n: 3 },
+    ],
+  },
+  scullery: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xcfcabd, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'bareBulb', rule: 'centre', colour: 0xffe2b0, intensity: 12 },
+    dressing: [
+      { prop: 'stoneSink', at: 'wall', n: 1, priority: true },
+      { prop: 'larderShelf', at: 'wall', n: 2 },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'pot', at: 'free', n: 4 },
+      { prop: 'clothPile', at: 'free', n: 2 },
+    ],
+  },
+  pantry: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xd4cfc2, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffc98a, intensity: 9 },
+    dressing: [
+      { prop: 'larderShelf', at: 'wall', n: 4, priority: true },
+      { prop: 'bottle', at: 'free', n: 5 },
+      { prop: 'crate', at: 'free', n: 2 },
+    ],
+  },
+  passage: {
+    floor: 'flagstone',
+    wall: { field: 'limewash', tint: 0xc6c1b4, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'bareBulb', rule: 'rhythm', colour: 0xffdcae, intensity: 10 },
+    dressing: [
+      { prop: 'bellBoard', at: 'wall', n: 1 },
+      { prop: 'coatHooks', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 1 },
+    ],
+  },
+  corridor: {
+    floor: 'woodFloor',
+    wall: { field: 'damask', tint: 0x8a7355, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 12 },
+    dressing: [
+      { prop: 'pictureFrame', at: 'wall', n: 4, hangHeight: 2.1 },
+      { prop: 'sideTable', at: 'wall', n: 1 },
+    ],
+  },
+  stairwell: {
+    floor: 'woodFloor',
+    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 13 },
+    dressing: [{ prop: 'pictureFrame', at: 'wall', n: 3, hangHeight: 2.4 }],
+  },
+  cloakroom: {
+    floor: 'tileFloor',
+    wall: { field: 'glazedBrick', tint: 0xd8d4cb, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffc07a, intensity: 8 },
+    dressing: [
+      { prop: 'coatHooks', at: 'wall', n: 1 },
+      { prop: 'washstand', at: 'wall', n: 1 },
+    ],
+  },
+
+  // --- the cellars ---------------------------------------------------------
+  cellar: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xbba393, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x9fd0e4, intensity: 14 },
+    dressing: [
+      { prop: 'crate', at: 'free', n: 3 },
+      { prop: 'barrel', at: 'free', n: 2 },
+    ],
+  },
+  cellarCoal: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x9c8878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc0d8, intensity: 11 },
+    dressing: [
+      { prop: 'coalPile', at: 'corner', n: 2, priority: true },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 2 },
+    ],
+  },
+  cellarBoiler: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0xa89080, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0xffa060, intensity: 15 },
+    dressing: [
+      { prop: 'boiler', at: 'wall', n: 1, priority: true },
+      { prop: 'workbench', at: 'wall', n: 1 },
+      { prop: 'barrel', at: 'free', n: 2 },
+      { prop: 'coalPile', at: 'corner', n: 1 },
+    ],
+  },
+  cellarWine: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xb09884, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffbf80, intensity: 10 },
+    dressing: [
+      { prop: 'wineRack', at: 'wall', n: 4, priority: true },
+      { prop: 'barrel', at: 'free', n: 2 },
+      { prop: 'bottle', at: 'free', n: 4 },
+    ],
+  },
+  cistern: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x8fa0a0, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc8e0, intensity: 13 },
+    dressing: [{ prop: 'barrel', at: 'free', n: 2 }],
+  },
+  ritual: {
+    floor: 'concrete',
+    wall: { field: 'redBrick', tint: 0x9a7a72, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'redBrick', treatment: 'vault' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 12 },
+    dressing: [{ prop: 'candle', at: 'wall', n: 5 }],
+  },
+
+  // --- the chapel and the arena -------------------------------------------
+  nave: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0xa8a096, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa851, intensity: 14 },
+    dressing: [{ prop: 'candle', at: 'wall', n: 6 }],
+  },
+  aisle: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0x9a938a, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 10 },
+    dressing: [{ prop: 'pillar', at: 'rhythm', n: 4, priority: true }],
+  },
+  arena: {
+    floor: 'tileFloor',
+    wall: { field: 'wallStone', tint: 0xb08878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'wallStone', treatment: 'flat' },
+    light: { fixture: 'candles', rule: 'rhythm', colour: 0xff7a3a, intensity: 16 },
+    dressing: [
+      { prop: 'pillar', at: 'corner', n: 4 },
+      { prop: 'rubble', at: 'free', n: 5 },
+    ],
+  },
+
+  // --- outdoors ------------------------------------------------------------
+  porch: {
+    floor: 'flagstone',
+    wall: { field: 'redBrick', tint: 0xa08878, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0xffc07a, intensity: 16 },
+    dressing: [{ prop: 'umbrellaStand', at: 'wall', n: 1 }],
+  },
+  drive: {
+    floor: 'concrete', char: '%',
+    wall: { field: 'redBrick', tint: 0x92806f, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'lantern', rule: 'rhythm', colour: 0x9fc4ff, intensity: 18 },
+    dressing: [],
+  },
+  garden: {
+    floor: 'grass', char: ';',
+    wall: { field: 'redBrick', tint: 0x8a7868, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: null,
+    light: { fixture: 'none', rule: 'none' },
+    dressing: [{ prop: 'rubble', at: 'free', n: 3 }],
+  },
+  shed: {
+    floor: 'woodFloor',
+    wall: { field: 'oakPanel', tint: 0xa08868, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'oakPanel', treatment: 'beams' },
+    light: { fixture: 'lantern', rule: 'centre', colour: 0xffd0a0, intensity: 14 },
+    dressing: [
+      { prop: 'workbench', at: 'wall', n: 1, priority: true },
+      { prop: 'larderShelf', at: 'wall', n: 1 },
+      { prop: 'crate', at: 'free', n: 2 },
+      { prop: 'barrel', at: 'free', n: 1 },
+    ],
+  },
+
+  // fallback for anything unclassified
+  plain: {
+    floor: 'woodFloor',
+    wall: { field: 'wallPaper', tint: 0xffffff, wainscot: null, dado: 0, rail: false, picture: false },
+    ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
+    light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffa851, intensity: 12 },
+    dressing: [],
+  },
+};
+
+export function roomType(name) {
+  return ROOM_TYPES[name] || ROOM_TYPES.plain;
+}
+
 function rasterize(blueprint) {
   const { size, rooms = [], walls = [], doors = [], markers = {} } = blueprint;
   const [W, H] = size;
   const grid = Array.from({ length: H }, () => new Array(W).fill(' '));
   const wallPref = Array.from({ length: H }, () => new Array(W).fill(null));
+  // Which room owns each cell. This is the thing the old rasterizer threw
+  // away, and the reason every room in a chapter used to look identical: the
+  // builder never learned that this tile was a kitchen and that one a library.
+  const zones = new Int16Array(W * H).fill(-1);
+  const index = [];
 
   const inside = (x, y) => x >= 0 && x < W && y >= 0 && y < H;
 
   // 1. carve every walkable rectangle
-  rooms.forEach((room) => {
+  rooms.forEach((room, id) => {
+    index.push({
+      id,
+      type: room.type || 'plain',
+      name: room.name || '',
+      rect: { x: room.x, y: room.y, w: room.w, h: room.h },
+    });
     for (let y = room.y; y < room.y + room.h; y += 1) {
       for (let x = room.x; x < room.x + room.w; x += 1) {
         if (!inside(x, y)) continue;
-        grid[y][x] = room.floor || '.';
+        grid[y][x] = room.floor || ROOM_TYPES[room.type]?.char || '.';
+        zones[y * W + x] = id;
       }
     }
     // remember which wall style should surround this space
@@ -71,7 +403,7 @@ function rasterize(blueprint) {
     spots.forEach(([x, y]) => { if (inside(x, y)) grid[y][x] = ch; });
   });
 
-  return grid.map((row) => row.join(''));
+  return { grid: grid.map((row) => row.join('')), zones, rooms: index, cols: W, rows: H };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,14 +435,14 @@ const CH1 = {
   blueprint: rasterize({
     size: [34, 28],
     rooms: [
-      { x: 13, y: 2, w: 8, h: 3, floor: '=', wall: 'X' },      // الشرفة
-      { x: 16, y: 5, w: 3, h: 2, floor: '=' },                  // الدرج
-      { x: 15, y: 7, w: 4, h: 19, floor: '%' },                 // الطريق
-      { x: 2, y: 8, w: 11, h: 15, floor: ';' },                 // حديقة غربية
-      { x: 21, y: 8, w: 11, h: 15, floor: ';' },                // حديقة شرقية
-      { x: 13, y: 15, w: 2, h: 3, floor: ';' },                 // ممر غربي
-      { x: 19, y: 12, w: 2, h: 3, floor: ';' },                 // ممر شرقي
-      { x: 4, y: 10, w: 5, h: 4, floor: '.', wall: 'X' },       // السقيفة
+      { x: 13, y: 2, w: 8, h: 3, floor: '=', wall: 'X', type: 'porch' },      // الشرفة
+      { x: 16, y: 5, w: 3, h: 2, floor: '=', type: 'porch' },                  // الدرج
+      { x: 15, y: 7, w: 4, h: 19, floor: '%', type: 'drive' },                 // الطريق
+      { x: 2, y: 8, w: 11, h: 15, floor: ';', type: 'garden' },                 // حديقة غربية
+      { x: 21, y: 8, w: 11, h: 15, floor: ';', type: 'garden' },                // حديقة شرقية
+      { x: 13, y: 15, w: 2, h: 3, floor: ';', type: 'garden' },                 // ممر غربي
+      { x: 19, y: 12, w: 2, h: 3, floor: ';', type: 'garden' },                 // ممر شرقي
+      { x: 4, y: 10, w: 5, h: 4, floor: '.', wall: 'X', type: 'shed' },       // السقيفة
     ],
     walls: [{ x: 3, y: 9, w: 7, h: 6, outline: true, char: 'X' }],
     doors: [[6, 14]],
@@ -167,19 +499,19 @@ const CH2 = {
   blueprint: rasterize({
     size: [40, 30],
     rooms: [
-      { x: 16, y: 20, w: 9, h: 8, floor: ',' },                 // البهو
-      { x: 19, y: 28, w: 3, h: 2, floor: '=' },                 // المدخل
-      { x: 8, y: 23, w: 8, h: 3, floor: '.' },                  // ممر غربي
-      { x: 2, y: 18, w: 10, h: 8, floor: '.' },                 // غرفة الطعام
-      { x: 5, y: 14, w: 3, h: 4, floor: '.' },                  // ممر المطبخ
-      { x: 2, y: 6, w: 9, h: 8, floor: '=' },                   // المطبخ
-      { x: 11, y: 10, w: 3, h: 3, floor: '=' },                 // وصلة المطبخ
-      { x: 14, y: 8, w: 13, h: 6, floor: '.' },                 // الصالة العليا
-      { x: 19, y: 14, w: 3, h: 6, floor: '.' },                 // الدرج الأوسط
-      { x: 25, y: 22, w: 2, h: 3, floor: '.' },                 // ممر شرقي
-      { x: 27, y: 17, w: 11, h: 9, floor: ',' },                // المكتبة
-      { x: 27, y: 10, w: 2, h: 3, floor: '.' },                 // وصلة القبو
-      { x: 29, y: 6, w: 8, h: 8, floor: '%', wall: 'X' },       // بسطة القبو
+      { x: 16, y: 20, w: 9, h: 8, floor: ',', type: 'hall' },                 // البهو
+      { x: 19, y: 28, w: 3, h: 2, floor: '=', type: 'porch' },                 // المدخل
+      { x: 8, y: 23, w: 8, h: 3, floor: '.', type: 'corridor' },                  // ممر غربي
+      { x: 2, y: 18, w: 10, h: 8, floor: '.', type: 'dining' },                 // غرفة الطعام
+      { x: 5, y: 14, w: 3, h: 4, floor: '.', type: 'passage' },                  // ممر المطبخ
+      { x: 2, y: 6, w: 9, h: 8, floor: '=', type: 'kitchen' },                   // المطبخ
+      { x: 11, y: 10, w: 3, h: 3, floor: '=', type: 'passage' },                 // وصلة المطبخ
+      { x: 14, y: 8, w: 13, h: 6, floor: '.', type: 'drawing' },                 // الصالة العليا
+      { x: 19, y: 14, w: 3, h: 6, floor: '.', type: 'stairwell' },                 // الدرج الأوسط
+      { x: 25, y: 22, w: 2, h: 3, floor: '.', type: 'corridor' },                 // ممر شرقي
+      { x: 27, y: 17, w: 11, h: 9, floor: ',', type: 'library' },                // المكتبة
+      { x: 27, y: 10, w: 2, h: 3, floor: '.', type: 'passage' },                 // وصلة القبو
+      { x: 29, y: 6, w: 8, h: 8, floor: '%', wall: 'X', type: 'scullery' },       // بسطة القبو
     ],
     // wall stubs beside each door so a closed door really blocks the opening
     walls: [
@@ -270,16 +602,16 @@ const CH3 = {
   blueprint: rasterize({
     size: [36, 28],
     rooms: [
-      { x: 16, y: 23, w: 6, h: 4, floor: '%' },                 // بسطة الدرج
-      { x: 18, y: 21, w: 3, h: 2, floor: '~' },
-      { x: 5, y: 17, w: 26, h: 4, floor: '~' },                 // الممر الغارق
-      { x: 6, y: 16, w: 3, h: 1, floor: '~' },
-      { x: 3, y: 8, w: 10, h: 8, floor: '%' },                  // غرفة المرجل
-      { x: 27, y: 15, w: 1, h: 2, floor: '~' },
-      { x: 25, y: 8, w: 8, h: 7, floor: '%' },                  // المخزن
-      { x: 14, y: 4, w: 10, h: 8, floor: '%' },                 // غرفة الطقوس
-      { x: 13, y: 9, w: 1, h: 3, floor: '%' },
-      { x: 24, y: 10, w: 1, h: 2, floor: '%' },
+      { x: 16, y: 23, w: 6, h: 4, floor: '%', type: 'cellar' },                 // بسطة الدرج
+      { x: 18, y: 21, w: 3, h: 2, floor: '~', type: 'cellar' },
+      { x: 5, y: 17, w: 26, h: 4, floor: '~', type: 'cistern' },                 // الممر الغارق
+      { x: 6, y: 16, w: 3, h: 1, floor: '~', type: 'cistern' },
+      { x: 3, y: 8, w: 10, h: 8, floor: '%', type: 'cellarBoiler' },                  // غرفة المرجل
+      { x: 27, y: 15, w: 1, h: 2, floor: '~', type: 'cistern' },
+      { x: 25, y: 8, w: 8, h: 7, floor: '%', type: 'cellarWine' },                  // المخزن
+      { x: 14, y: 4, w: 10, h: 8, floor: '%', type: 'ritual' },                 // غرفة الطقوس
+      { x: 13, y: 9, w: 1, h: 3, floor: '%', type: 'cellar' },
+      { x: 24, y: 10, w: 1, h: 2, floor: '%', type: 'cellar' },
     ],
     walls: [
       { x: 17, y: 7, w: 1, h: 1 }, { x: 20, y: 7, w: 1, h: 1 },
@@ -350,9 +682,9 @@ const CH4 = {
   blueprint: rasterize({
     size: [32, 30],
     rooms: [
-      { x: 14, y: 20, w: 4, h: 9, floor: '=' },                 // الممر
-      { x: 10, y: 14, w: 12, h: 6, floor: '=' },                // الردهة
-      { x: 6, y: 3, w: 20, h: 10, floor: '=' },                 // الصحن
+      { x: 14, y: 20, w: 4, h: 9, floor: '=', type: 'aisle' },                 // الممر
+      { x: 10, y: 14, w: 12, h: 6, floor: '=', type: 'aisle' },                // الردهة
+      { x: 6, y: 3, w: 20, h: 10, floor: '=', type: 'nave' },                 // الصحن
     ],
     walls: [
       { x: 6, y: 13, w: 20, h: 1 },
@@ -417,7 +749,7 @@ const CH5 = {
   blueprint: rasterize({
     size: [30, 30],
     rooms: [
-      { x: 4, y: 4, w: 22, h: 22, floor: '=' },
+      { x: 4, y: 4, w: 22, h: 22, floor: '=', type: 'arena' },
     ],
     walls: [
       { x: 8, y: 8, w: 2, h: 2 }, { x: 20, y: 8, w: 2, h: 2 },

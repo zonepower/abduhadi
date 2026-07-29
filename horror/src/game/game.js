@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { RTRenderer, QUALITY_PRESETS } from '../engine/renderer.js';
-import { buildTextureLibrary } from '../engine/textures.js';
 import { Input } from '../engine/input.js';
 import { AudioEngine } from '../engine/audio.js';
 import { VoiceDirector } from '../engine/voice.js';
@@ -23,9 +22,14 @@ const SAVE_KEY = 'bayt.almahjur.save';
 const SETTINGS_KEY = 'bayt.almahjur.settings';
 
 export class Game {
-  constructor(canvas) {
+  /**
+   * `textures` comes pre-baked from the loader so the boot screen can show
+   * real progress while the surfaces are generated — baking them in here
+   * froze the tab for the whole bake.
+   */
+  constructor(canvas, textures) {
     this.canvas = canvas;
-    this.textures = buildTextureLibrary();
+    this.textures = textures;
     this.rt = new RTRenderer(canvas, this.textures);
     this.audio = new AudioEngine();
     this.vocals = new Vocals(this.audio);
