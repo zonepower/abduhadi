@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>البيت المهجور — الفصل الأخير</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <!-- ================= HUD ================= -->
+  <div id="hud" class="hidden">
+    <div id="crosshair"><span></span><span></span><span></span><span></span></div>
+
+    <div id="vitals">
+      <div class="bar-row">
+        <span class="bar-label">الصحة</span>
+        <div class="bar"><i id="healthFill"></i></div>
+        <span id="healthText" class="bar-num">100</span>
+      </div>
+      <div class="bar-row small">
+        <span class="bar-label">الاتزان</span>
+        <div class="bar thin"><i id="sanityFill" class="sanity"></i></div>
+      </div>
+      <div class="bar-row small">
+        <span class="bar-label">النفَس</span>
+        <div class="bar thin"><i id="staminaFill" class="stamina"></i></div>
+      </div>
+      <div class="bar-row small">
+        <span class="bar-label">البطارية</span>
+        <div class="bar thin"><i id="batteryFill" class="battery"></i></div>
+      </div>
+    </div>
+
+    <div id="weapon">
+      <div id="weaponName">يدان فارغتان</div>
+      <div id="weaponAmmo">—</div>
+    </div>
+
+    <div id="objective" class="hidden">
+      <span class="objective-tag">الهدف</span>
+      <span id="objectiveText"></span>
+    </div>
+
+    <div id="bossBar" class="hidden">
+      <div id="bossName">الراعي</div>
+      <div class="boss-track"><i id="bossFill"></i></div>
+    </div>
+
+    <div id="prompt" class="hidden"></div>
+    <div id="toast" class="hidden"></div>
+
+    <div id="subtitle" class="hidden">
+      <span id="subtitleWho"></span>
+      <span id="subtitleText"></span>
+    </div>
+  </div>
+
+  <div id="letterbox" class="hidden"><i></i><i></i></div>
+
+  <div id="chapterCard" class="hidden">
+    <h2 id="chapterTitle"></h2>
+    <p id="chapterSubtitle"></p>
+  </div>
+
+  <div id="deathScreen" class="hidden">
+    <h2>لقد مُت</h2>
+    <p id="deathText"></p>
+    <div class="row">
+      <button id="retryBtn" class="primary">أعد المحاولة</button>
+      <button id="menuFromDeath">القائمة الرئيسية</button>
+    </div>
+  </div>
+
+  <!-- ================= OVERLAY SCREENS ================= -->
+  <div id="overlay">
+    <div id="loading" class="panel hidden">
+      <div class="spinner"></div>
+      <p id="loadingText">جارٍ توليد المواد والخرائط…</p>
+    </div>
+
+    <div id="menu" class="panel hidden">
+      <div class="title-block">
+        <h1>البيت المهجور</h1>
+        <p class="tagline">الفصل الأخير · لعبة رعب من منظور الشخص الأول</p>
+      </div>
+      <div class="menu-buttons">
+        <button id="newGameBtn" class="primary">لعبة جديدة</button>
+        <button id="continueBtn" class="hidden">متابعة <small id="continueLabel"></small></button>
+        <button id="chaptersBtn">اختيار الفصل</button>
+        <button id="settingsBtn">الإعدادات</button>
+      </div>
+      <div class="menu-foot">
+        <p><b>تحذير:</b> تحتوي اللعبة على مشاهد عنف ومواقف مؤلمة.</p>
+        <p class="tech">WebGL2 · انعكاسات وإضاءة حجمية بتتبّع أشعة في فضاء الشاشة · حوارات صوتية عربية</p>
+      </div>
+    </div>
+
+    <div id="chapters" class="panel hidden">
+      <h2>الفصول</h2>
+      <div id="chapterList" class="chapter-list"></div>
+      <button id="backFromChapters">رجوع</button>
+    </div>
+
+    <div id="settings" class="panel hidden">
+      <h2>الإعدادات</h2>
+      <div class="settings-grid">
+        <label for="qualitySelect">مستوى الرسوميات</label>
+        <select id="qualitySelect"></select>
+
+        <label for="sensitivityRange">حساسية الفأرة <b id="sensitivityRangeValue"></b></label>
+        <input id="sensitivityRange" type="range" min="0.2" max="3" step="0.05" />
+
+        <label for="masterRange">الصوت العام <b id="masterRangeValue"></b></label>
+        <input id="masterRange" type="range" min="0" max="1" step="0.05" />
+
+        <label for="musicRange">الموسيقى <b id="musicRangeValue"></b></label>
+        <input id="musicRange" type="range" min="0" max="1" step="0.05" />
+
+        <label for="voiceVolumeRange">أصوات الشخصيات <b id="voiceVolumeRangeValue"></b></label>
+        <input id="voiceVolumeRange" type="range" min="0" max="1" step="0.05" />
+
+        <label for="invertToggle">عكس المحور الرأسي</label>
+        <input id="invertToggle" type="checkbox" />
+
+        <label for="voiceToggle">نطق الكلمات (يعتمد على أصوات النظام)</label>
+        <input id="voiceToggle" type="checkbox" />
+
+        <label for="subtitleToggle">الترجمة النصية</label>
+        <input id="subtitleToggle" type="checkbox" />
+      </div>
+      <p id="voiceNote" class="note"></p>
+      <div class="controls-help">
+        <h3>التحكم</h3>
+        <ul>
+          <li><b>W A S D</b> الحركة · <b>Shift</b> ركض · <b>Ctrl</b> انحناء</li>
+          <li><b>الفأرة</b> النظر · <b>الزر الأيسر</b> هجوم · <b>الزر الأيمن</b> تصويب</li>
+          <li><b>E</b> تفاعل · <b>F</b> الكشّاف · <b>R</b> إعادة تلقيم</li>
+          <li><b>1-4</b> تبديل السلاح · <b>Space</b> تخطّي الحوار · <b>Esc</b> إيقاف مؤقت</li>
+        </ul>
+      </div>
+      <button id="backFromSettings">رجوع</button>
+    </div>
+
+    <div id="pause" class="panel hidden">
+      <h2>إيقاف مؤقت</h2>
+      <div class="menu-buttons">
+        <button id="resumeBtn" class="primary">متابعة</button>
+        <button id="pauseSettingsBtn">الإعدادات</button>
+        <button id="quitBtn">الخروج إلى القائمة</button>
+      </div>
+    </div>
+
+    <div id="ending" class="panel hidden">
+      <h2>النهاية</h2>
+      <p class="ending-text">
+        خرج كريم عند الفجر وابنته بين ذراعيه.<br />
+        لم يخبر أحداً بما رآه، ولم يعد أحدٌ يسمع ضحكاً على ذلك الطريق.<br />
+        لكن في كل ليلة مطر… يقف هناك، وينتظر أن يضيع أحدهم.
+      </p>
+      <button id="endingBtn" class="primary">القائمة الرئيسية</button>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
