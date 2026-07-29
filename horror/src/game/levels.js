@@ -490,62 +490,58 @@ const CH2 = {
   space: 'house',
   environment: { dust: 0.8 },
   wallHeight: 4.2,
-  defaultFloor: 'wood',
-  wallMaterial: 'wallPaper',
-  ceilingMaterial: 'panel',
   fog: { color: 0x0e1018, density: 0.019 },
   exposure: 1.2,
+  lightBudget: 34,
   ambientLight: { color: 0x63708c, intensity: 1.9 },
+  // A real Victorian ground floor. The entrance hall is the landmark you keep
+  // coming back to; the two best rooms face the front, the service rooms hide
+  // behind a back corridor, and the cellar door is at the far end of it. Rooms
+  // are separated by a one-tile wall so every opening is a real door.
   blueprint: rasterize({
     size: [40, 30],
     rooms: [
-      { x: 16, y: 20, w: 9, h: 8, floor: ',', type: 'hall' },                 // البهو
-      { x: 19, y: 28, w: 3, h: 2, floor: '=', type: 'porch' },                 // المدخل
-      { x: 8, y: 23, w: 8, h: 3, floor: '.', type: 'corridor' },                  // ممر غربي
-      { x: 2, y: 18, w: 10, h: 8, floor: '.', type: 'dining' },                 // غرفة الطعام
-      { x: 5, y: 14, w: 3, h: 4, floor: '.', type: 'passage' },                  // ممر المطبخ
-      { x: 2, y: 6, w: 9, h: 8, floor: '=', type: 'kitchen' },                   // المطبخ
-      { x: 11, y: 10, w: 3, h: 3, floor: '=', type: 'passage' },                 // وصلة المطبخ
-      { x: 14, y: 8, w: 13, h: 6, floor: '.', type: 'drawing' },                 // الصالة العليا
-      { x: 19, y: 14, w: 3, h: 6, floor: '.', type: 'stairwell' },                 // الدرج الأوسط
-      { x: 25, y: 22, w: 2, h: 3, floor: '.', type: 'corridor' },                 // ممر شرقي
-      { x: 27, y: 17, w: 11, h: 9, floor: ',', type: 'library' },                // المكتبة
-      { x: 27, y: 10, w: 2, h: 3, floor: '.', type: 'passage' },                 // وصلة القبو
-      { x: 29, y: 6, w: 8, h: 8, floor: '%', wall: 'X', type: 'scullery' },       // بسطة القبو
+      { x: 18, y: 27, w: 4, h: 3, type: 'porch', floor: '=' },        // الشرفة
+      { x: 15, y: 19, w: 10, h: 7, type: 'hall' },                    // البهو والدرج
+      { x: 2, y: 19, w: 12, h: 7, type: 'drawing' },                  // صالة الاستقبال
+      { x: 26, y: 19, w: 12, h: 7, type: 'dining' },                  // غرفة الطعام
+      { x: 18, y: 13, w: 4, h: 5, type: 'stairwell' },                // بسطة الدرج
+      { x: 14, y: 14, w: 3, h: 3, type: 'cloakroom' },                // غرفة المعاطف
+      { x: 8, y: 10, w: 27, h: 2, type: 'passage' },                  // ممر الخدم
+      { x: 2, y: 3, w: 10, h: 6, type: 'kitchen' },                   // المطبخ
+      { x: 13, y: 3, w: 7, h: 6, type: 'scullery' },                  // المغسلة
+      { x: 21, y: 3, w: 5, h: 6, type: 'pantry' },                    // المخزن
+      { x: 27, y: 3, w: 10, h: 6, type: 'library' },                  // المكتبة
+      { x: 33, y: 13, w: 4, h: 4, type: 'passage', floor: '%' },      // رأس درج القبو
     ],
-    // wall stubs beside each door so a closed door really blocks the opening
-    walls: [
-      { x: 15, y: 23, w: 1, h: 1 }, { x: 15, y: 25, w: 1, h: 1 },
-      { x: 25, y: 22, w: 2, h: 1 }, { x: 25, y: 24, w: 2, h: 1 },
-      { x: 19, y: 19, w: 1, h: 1 }, { x: 21, y: 19, w: 1, h: 1 },
-      { x: 27, y: 10, w: 2, h: 1 }, { x: 27, y: 12, w: 2, h: 1 },
+    walls: [],
+    doors: [
+      [19, 26], [20, 26],          // الشرفة إلى البهو
+      [14, 22],                    // البهو إلى صالة الاستقبال
+      [25, 22],                    // البهو إلى غرفة الطعام
+      [19, 18], [20, 18],          // البهو إلى بسطة الدرج
+      [17, 15],                    // بسطة الدرج إلى غرفة المعاطف
+      [19, 12],                    // بسطة الدرج إلى ممر الخدم
+      [9, 9], [16, 9], [23, 9], [31, 9],   // الممر إلى المطبخ والمغسلة والمخزن والمكتبة
+      [34, 12],                    // الممر إلى رأس درج القبو
     ],
-    doors: [[25, 23], [26, 23], [15, 24], [20, 19], [27, 11], [28, 11]],
     markers: {
-      P: [[20, 28]],
-      L: [[21, 26]],
-      E: [[33, 12]],
-      1: [[4, 8]],
-      2: [[35, 20]],
-      3: [[5, 20]],
-      4: [[33, 23]],
-      F: [[33, 7]],
-      '!': [[20, 25]],
-      '*': [[12, 11]],
-      $: [[32, 21]],
-      '&': [[33, 9]],
-      Z: [[3, 20], [30, 19], [16, 10], [9, 8]],
-      h: [[20, 22], [20, 10]],
-      m: [[17, 21], [26, 9]],
-      c: [[24, 27], [17, 27], [3, 7], [37, 18], [15, 9], [30, 13]],
-      t: [[6, 21]],
-      r: [[6, 19], [8, 22], [4, 22]],
-      s: [[28, 18], [31, 18], [34, 18], [37, 22]],
-      p: [[29, 24]],
-      g: [[16, 8], [24, 8], [10, 24]],
-      o: [[9, 12], [36, 25]],
-      B: [[10, 13], [20, 16], [35, 24]],
-      k: [[31, 8], [35, 12]],
+      P: [[19, 28]],
+      L: [[20, 28]],
+      E: [[34, 15]],
+      F: [[34, 14]],
+      1: [[4, 5]],                 // مصهر في المطبخ
+      2: [[31, 6]],                // مصهر في المكتبة
+      3: [[5, 22]],                // مصهر في صالة الاستقبال
+      4: [[29, 5]],                // المسدس في درج مكتب المكتبة
+      '*': [[19, 15]],             // أول وحش، على الدرج
+      $: [[11, 10]],               // جدار الصور الممزقة في ممر الخدم
+      '&': [[34, 16]],             // لوحة الكهرباء
+      '!': [[19, 24]],
+      Z: [[5, 6], [30, 5], [10, 22], [31, 22], [24, 10]],
+      o: [[8, 4], [35, 21]],
+      B: [[19, 16], [12, 22], [24, 11]],
+      p: [[4, 24]],
     },
   }),
   items: {
@@ -554,30 +550,19 @@ const CH2 = {
     3: { kind: 'fuse', name: 'مصهر (٣/٣)', line: 'الثالث! هيا إلى اللوحة.' },
     4: { kind: 'revolver', name: 'مسدس قديم', ammo: 18 },
   },
+  // The rooms furnish themselves from their type; only the story dressing is
+  // placed by hand now.
   props: [
-    { type: 'chandelier', marker: 'h', hang: true },
-    { type: 'mirror', marker: 'm' },
-    { type: 'candle', marker: 'c' },
-    { type: 'table', marker: 't' },
-    { type: 'chair', marker: 'r' },
-    { type: 'shelf', marker: 's' },
-    { type: 'piano', marker: 'p' },
-    { type: 'painting', marker: 'g' },
+    { type: 'fuseBox', marker: 'F' },
     { type: 'corpse', marker: 'o' },
     { type: 'bloodPool', marker: 'B' },
-    { type: 'crate', marker: 'k' },
-    { type: 'fuseBox', marker: 'F' },
+    { type: 'piano', marker: 'p' },
   ],
   enemies: [
     { marker: 'Z', type: 'crawler', dormantUntil: 'fuse1' },
   ],
 };
 
-// ---------------------------------------------------------------------------
-// CHAPTER 3 — القبو الغارق
-// A ring corridor with three dead-end valve rooms. Water slows movement, so
-// the ring doubles as the chase track for the ending of the chapter.
-// ---------------------------------------------------------------------------
 const CH3 = {
   id: 'basement',
   index: 3,
@@ -612,13 +597,14 @@ const CH3 = {
       { x: 14, y: 4, w: 10, h: 8, floor: '%', type: 'ritual' },                 // غرفة الطقوس
       { x: 13, y: 9, w: 1, h: 3, floor: '%', type: 'cellar' },
       { x: 24, y: 10, w: 1, h: 2, floor: '%', type: 'cellar' },
+      { x: 3, y: 22, w: 6, h: 4, floor: '%', type: 'cellarCoal' },   // مخزن الفحم
     ],
     walls: [
       { x: 17, y: 7, w: 1, h: 1 }, { x: 20, y: 7, w: 1, h: 1 },
       { x: 18, y: 22, w: 1, h: 1 }, { x: 20, y: 22, w: 1, h: 1 },
       { x: 6, y: 16, w: 1, h: 1 }, { x: 8, y: 16, w: 1, h: 1 },
     ],
-    doors: [[19, 22], [7, 16], [27, 15]],
+    doors: [[19, 22], [7, 16], [27, 15], [5, 21]],
     markers: {
       P: [[19, 25]],
       L: [[18, 25]],
