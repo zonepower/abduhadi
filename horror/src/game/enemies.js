@@ -29,7 +29,7 @@ export class Actor {
     this.stagger = 0;
     this.deadTimer = 0;
 
-    this.body = buildCharacter(opts.kind || 'karim');
+    this.body = buildCharacter(opts.kind || 'karim', opts.seed ?? 0);
     this.body.materials.skinRef = this.body.materials.skin;
     this.mesh = this.body.root;
     this.mesh.position.copy(this.position);
@@ -183,7 +183,12 @@ export class Enemy extends Actor {
       },
     };
     const preset = presets[type] || presets.crawler;
-    super(level, position, preset);
+    // seed from the spawn point: deterministic per level, but no two enemies
+    // in a chapter are the same body twice
+    super(level, position, {
+      ...preset,
+      seed: Math.round(position.x * 13.7 + position.z * 7.3),
+    });
     this.type = type;
     this.audio = audio;
     this.damageAmount = preset.damage;

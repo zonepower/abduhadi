@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGroup } from '../engine/geometry.js';
 import { roomType } from './levels.js';
 
 // ---------------------------------------------------------------------------
@@ -142,74 +143,6 @@ function part(geometry, material, x = 0, y = 0, z = 0, rot = null) {
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
-}
-
-/**
- * Concatenates geometries into one buffer. `mergeGeometries` is not in the
- * vendored three build, and a furnished manor at one draw call per box runs to
- * thousands — so props are merged per material on creation.
- */
-function mergeBuffers(geometries) {
-  const parts = geometries.map((g) => (g.index ? g.toNonIndexed() : g));
-  let count = 0;
-  parts.forEach((g) => { count += g.attributes.position.count; });
-  const position = new Float32Array(count * 3);
-  const normal = new Float32Array(count * 3);
-  const uv = new Float32Array(count * 2);
-  let v = 0;
-  parts.forEach((g) => {
-    const p = g.attributes.position;
-    const n = g.attributes.normal;
-    const t = g.attributes.uv;
-    position.set(p.array.subarray(0, p.count * 3), v * 3);
-    if (n) normal.set(n.array.subarray(0, p.count * 3), v * 3);
-    if (t) uv.set(t.array.subarray(0, p.count * 2), v * 2);
-    v += p.count;
-  });
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(position, 3));
-  geo.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  geo.computeBoundingSphere();
-  return geo;
-}
-
-/**
- * Collapses a prop into one mesh per material, keeping its lights and
- * `userData` intact. Called while the prop still sits at the origin, so the
- * baked matrices stay local and the caller can position the result freely.
- */
-function mergeGroup(root) {
-  root.updateMatrixWorld(true);
-  const byMaterial = new Map();
-  const lights = [];
-  root.traverse((o) => {
-    if (o.isMesh) {
-      const key = o.material.uuid;
-      if (!byMaterial.has(key)) byMaterial.set(key, { material: o.material, geos: [] });
-      const g = o.geometry.clone();
-      g.applyMatrix4(o.matrixWorld);
-      byMaterial.get(key).geos.push(g);
-    } else if (o.isLight) {
-      lights.push(o);
-    }
-  });
-
-  const out = new THREE.Group();
-  byMaterial.forEach(({ material, geos }) => {
-    const mesh = new THREE.Mesh(mergeBuffers(geos), material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    out.add(mesh);
-    geos.forEach((g) => g.dispose());
-  });
-  lights.forEach((light) => {
-    light.position.setFromMatrixPosition(light.matrixWorld);
-    light.rotation.set(0, 0, 0);
-    out.add(light);
-  });
-  out.userData = root.userData;
-  return out;
 }
 
 // --- props ------------------------------------------------------------------
@@ -1296,7 +1229,11 @@ export class Level {
         if (isWater) this.waterTiles.add(`${col},${row}`);
 
         if (style.ceiling && def.ceiling !== false) {
-          const ck = `${style.ceiling.material}|${style.wall.tint}|${style.ceiling.treatment}`;
+          // A ceiling takes its own tint, never the wall's. Inheriting it made
+          // every papered room sit under a ceiling as dark as its walls, which
+          // is the fastest way to make an interior read as a cave.
+          const ceilTint = style.ceiling.tint ?? 0xe8e4dc;
+          const ck = `${style.ceiling.material}|${ceilTint}|${style.ceiling.treatment}`;
           if (!ceilingBuckets.has(ck)) ceilingBuckets.set(ck, []);
           ceilingBuckets.get(ck).push([col, row]);
         }

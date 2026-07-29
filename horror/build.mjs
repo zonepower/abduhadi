@@ -17,6 +17,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 
 // dependency order — a module may only reference names declared above it
 const MODULES = [
+  'src/engine/geometry.js',
   'src/engine/textures.js',
   'src/engine/shaders.js',
   'src/engine/renderer.js',

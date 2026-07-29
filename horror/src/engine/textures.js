@@ -1057,20 +1057,20 @@ const RECIPES = [
 
   // wall coverings
   ['damask', () => paperedWall(S, {
-    ground: [0.36, 0.34, 0.32], pattern: [0.54, 0.51, 0.47], cells: 3, raise: 0.55, sheen: 0.46,
+    ground: [0.64, 0.62, 0.59], pattern: [0.84, 0.81, 0.77], cells: 3, raise: 0.55, sheen: 0.46,
   })],
   ['flock', () => paperedWall(S, {
-    ground: [0.30, 0.27, 0.26], pattern: [0.46, 0.42, 0.40], cells: 2,
+    ground: [0.58, 0.55, 0.53], pattern: [0.78, 0.74, 0.71], cells: 2,
     raise: 0.95, sheen: 0.55, damp: 0.6,
   })],
   ['floralPaper', () => paperedWall(S, {
-    ground: [0.46, 0.43, 0.39], pattern: [0.60, 0.48, 0.46], cells: 5,
+    ground: [0.74, 0.71, 0.67], pattern: [0.88, 0.76, 0.74], cells: 5,
     motif: floralMotif, raise: 0.3, sheen: 0.30,
   })],
   ['wallPaper', () => plaster(S, [0.7, 0.63, 0.52], 0.85)],
   ['wallStone', () => plaster(S, [0.5, 0.5, 0.52], 0.6)],
   ['limewash', () => plaster(S, [0.78, 0.76, 0.70], 0.5)],
-  ['oakPanel', () => oakPanel(S, [0.48, 0.34, 0.22])],
+  ['oakPanel', () => oakPanel(S, [0.64, 0.47, 0.32])],
   ['ceilingPlaster', () => ceilingPlaster(S, [0.80, 0.78, 0.72])],
 
   // masonry

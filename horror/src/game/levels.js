@@ -24,7 +24,7 @@ export const ROOM_TYPES = {
   // --- the formal rooms ----------------------------------------------------
   hall: {
     floor: 'marbleCheck',
-    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    wall: { field: 'damask', tint: 0xd8bc90, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
     light: { fixture: 'chandelier', rule: 'both', colour: 0xffb877, intensity: 30 },
     dressing: [
@@ -38,7 +38,7 @@ export const ROOM_TYPES = {
   },
   drawing: {
     floor: 'parquet', floorTint: 0xd8b48c,
-    wall: { field: 'damask', tint: 0xa8434a, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    wall: { field: 'damask', tint: 0xdc9098, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'rose' },
     light: { fixture: 'chandelier', rule: 'both', colour: 0xffc089, intensity: 26 },
     dressing: [
@@ -54,8 +54,8 @@ export const ROOM_TYPES = {
     ],
   },
   dining: {
-    floor: 'parquet', floorTint: 0xa8815c,
-    wall: { field: 'flock', tint: 0x8f3038, wainscot: 'oakPanel', dado: 1.30, rail: true, picture: true },
+    floor: 'parquet', floorTint: 0xc89c70,
+    wall: { field: 'flock', tint: 0xcc7078, wainscot: 'oakPanel', dado: 1.30, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'beams' },
     light: { fixture: 'gasolier', rule: 'centre', colour: 0xffb066, intensity: 24 },
     dressing: [
@@ -68,9 +68,9 @@ export const ROOM_TYPES = {
     ],
   },
   library: {
-    floor: 'parquet', floorTint: 0x9a7550,
-    wall: { field: 'damask', tint: 0x6d7d5e, wainscot: 'oakPanel', dado: 0.90, rail: true, picture: true },
-    ceiling: { material: 'oakPanel', treatment: 'coffer' },
+    floor: 'parquet', floorTint: 0xbe9468,
+    wall: { field: 'damask', tint: 0xaec098, wainscot: 'oakPanel', dado: 0.90, rail: true, picture: true },
+    ceiling: { material: 'oakPanel', treatment: 'coffer', tint: 0xc0a078 },
     light: { fixture: 'gasolier', rule: 'both', colour: 0xffcf9a, intensity: 20 },
     dressing: [
       { prop: 'bookcase', at: 'wall', n: 8, priority: true },
@@ -83,8 +83,8 @@ export const ROOM_TYPES = {
     ],
   },
   study: {
-    floor: 'parquet', floorTint: 0x9a7550,
-    wall: { field: 'damask', tint: 0x9c7c48, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    floor: 'parquet', floorTint: 0xbe9468,
+    wall: { field: 'damask', tint: 0xd8b478, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
     light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffc27a, intensity: 15 },
     dressing: [
@@ -98,7 +98,7 @@ export const ROOM_TYPES = {
   },
   bedroom: {
     floor: 'woodFloor',
-    wall: { field: 'floralPaper', tint: 0xb08a86, wainscot: null, dado: 0, rail: false, picture: true },
+    wall: { field: 'floralPaper', tint: 0xe0b8b4, wainscot: null, dado: 0, rail: false, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
     light: { fixture: 'oilLamp', rule: 'rhythm', colour: 0xffbe80, intensity: 13 },
     dressing: [
@@ -166,7 +166,7 @@ export const ROOM_TYPES = {
   },
   corridor: {
     floor: 'woodFloor',
-    wall: { field: 'damask', tint: 0x8a7355, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
+    wall: { field: 'damask', tint: 0xccb088, wainscot: 'oakPanel', dado: 0.95, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
     light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 12 },
     dressing: [
@@ -176,7 +176,7 @@ export const ROOM_TYPES = {
   },
   stairwell: {
     floor: 'woodFloor',
-    wall: { field: 'damask', tint: 0x9c8258, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
+    wall: { field: 'damask', tint: 0xd8bc90, wainscot: 'oakPanel', dado: 1.15, rail: true, picture: true },
     ceiling: { material: 'ceilingPlaster', treatment: 'flat' },
     light: { fixture: 'sconce', rule: 'rhythm', colour: 0xffb877, intensity: 13 },
     dressing: [{ prop: 'pictureFrame', at: 'wall', n: 3, hangHeight: 2.4 }],
@@ -196,7 +196,7 @@ export const ROOM_TYPES = {
   cellar: {
     floor: 'flagstone',
     wall: { field: 'redBrick', tint: 0xbba393, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'lantern', rule: 'rhythm', colour: 0x9fd0e4, intensity: 14 },
     dressing: [
       { prop: 'crate', at: 'free', n: 3 },
@@ -206,7 +206,7 @@ export const ROOM_TYPES = {
   cellarCoal: {
     floor: 'concrete',
     wall: { field: 'redBrick', tint: 0x9c8878, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc0d8, intensity: 11 },
     dressing: [
       { prop: 'coalPile', at: 'corner', n: 2, priority: true },
@@ -217,7 +217,7 @@ export const ROOM_TYPES = {
   cellarBoiler: {
     floor: 'concrete',
     wall: { field: 'redBrick', tint: 0xa89080, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'lantern', rule: 'rhythm', colour: 0xffa060, intensity: 15 },
     dressing: [
       { prop: 'boiler', at: 'wall', n: 1, priority: true },
@@ -229,7 +229,7 @@ export const ROOM_TYPES = {
   cellarWine: {
     floor: 'flagstone',
     wall: { field: 'redBrick', tint: 0xb09884, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'candles', rule: 'rhythm', colour: 0xffbf80, intensity: 10 },
     dressing: [
       { prop: 'wineRack', at: 'wall', n: 4, priority: true },
@@ -240,14 +240,14 @@ export const ROOM_TYPES = {
   cistern: {
     floor: 'concrete',
     wall: { field: 'redBrick', tint: 0x8fa0a0, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'lantern', rule: 'rhythm', colour: 0x8fc8e0, intensity: 13 },
     dressing: [{ prop: 'barrel', at: 'free', n: 2 }],
   },
   ritual: {
     floor: 'concrete',
     wall: { field: 'redBrick', tint: 0x9a7a72, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'redBrick', treatment: 'vault' },
+    ceiling: { material: 'redBrick', treatment: 'vault', tint: 0xa89080 },
     light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 12 },
     dressing: [{ prop: 'candle', at: 'wall', n: 5 }],
   },
@@ -256,21 +256,21 @@ export const ROOM_TYPES = {
   nave: {
     floor: 'tileFloor',
     wall: { field: 'wallStone', tint: 0xa8a096, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'wallStone', treatment: 'flat' },
+    ceiling: { material: 'wallStone', treatment: 'flat', tint: 0xb0aaa0 },
     light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa851, intensity: 14 },
     dressing: [{ prop: 'candle', at: 'wall', n: 6 }],
   },
   aisle: {
     floor: 'tileFloor',
     wall: { field: 'wallStone', tint: 0x9a938a, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'wallStone', treatment: 'flat' },
+    ceiling: { material: 'wallStone', treatment: 'flat', tint: 0xb0aaa0 },
     light: { fixture: 'candles', rule: 'rhythm', colour: 0xffa050, intensity: 10 },
     dressing: [{ prop: 'pillar', at: 'rhythm', n: 4, priority: true }],
   },
   arena: {
     floor: 'tileFloor',
     wall: { field: 'wallStone', tint: 0xb08878, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'wallStone', treatment: 'flat' },
+    ceiling: { material: 'wallStone', treatment: 'flat', tint: 0xb0aaa0 },
     light: { fixture: 'candles', rule: 'rhythm', colour: 0xff7a3a, intensity: 16 },
     dressing: [
       { prop: 'pillar', at: 'corner', n: 4 },
@@ -303,7 +303,7 @@ export const ROOM_TYPES = {
   shed: {
     floor: 'woodFloor',
     wall: { field: 'oakPanel', tint: 0xa08868, wainscot: null, dado: 0, rail: false, picture: false },
-    ceiling: { material: 'oakPanel', treatment: 'beams' },
+    ceiling: { material: 'oakPanel', treatment: 'beams', tint: 0xbc9c74 },
     light: { fixture: 'lantern', rule: 'centre', colour: 0xffd0a0, intensity: 14 },
     dressing: [
       { prop: 'workbench', at: 'wall', n: 1, priority: true },

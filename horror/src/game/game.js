@@ -14,6 +14,7 @@ import { Player } from './player.js';
 import { Weapons } from './weapons.js';
 import { ShellPool } from './viewmodels.js';
 import { Enemy, Companion, PlayerAvatar } from './enemies.js';
+import { setCharacterTextures } from './characters.js';
 import { Boss } from './boss.js';
 import { HUD } from './hud.js';
 import { STORY, ENDING_LINES, LAUGH_LINES } from './story.js';
@@ -30,6 +31,7 @@ export class Game {
   constructor(canvas, textures) {
     this.canvas = canvas;
     this.textures = textures;
+    setCharacterTextures(textures);
     this.rt = new RTRenderer(canvas, this.textures);
     this.audio = new AudioEngine();
     this.vocals = new Vocals(this.audio);
